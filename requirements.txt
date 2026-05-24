@@ -1,0 +1,13 @@
+streamlit>=1.35.0
+pandas>=2.0.0
+numpy>=1.26.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+FinanceDataReader>=0.9.50
+dart-fss>=0.4.3
+beautifulsoup4>=4.12.0
+plotly>=5.20.0
+fpdf2>=2.7.9
+anthropic>=0.28.0
+pytrends>=4.9.2
+lxml>=5.0.0
