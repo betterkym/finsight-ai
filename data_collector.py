@@ -25,53 +25,73 @@ IS_ACCOUNTS = {"매출액", "영업이익", "당기순이익"}
 
 # 계정명 표준화 매핑 (기업마다 계정명이 달라서 통일)
 ACCOUNT_MAP = {
-    # 매출액
+    # ── 매출액 ────────────────────────────────────────────────
     "매출액": "매출액",
     "수익(매출액)": "매출액",
     "영업수익": "매출액",
-    "매출": "매출액",
-    "순매출액": "매출액",
     "매출액(영업수익)": "매출액",
-    # 영업이익
+    "순매출액": "매출액",
+    # "매출" 키는 "매출총이익" 오탐 위험이 있으나 MAX(abs) 전략으로 자기보정됨.
+    # 단, 반드시 "매출액" 보다 뒤에 위치해야 함 (exact match 우선이므로 문제 없음).
+    "매출": "매출액",
+
+    # ── 영업이익 ──────────────────────────────────────────────
     "영업이익": "영업이익",
     "영업이익(손실)": "영업이익",
+    "영업이익(영업손실)": "영업이익",
     "영업손익": "영업이익",
-    # 당기순이익
+
+    # ── 당기순이익 ────────────────────────────────────────────
     "당기순이익": "당기순이익",
     "당기순이익(손실)": "당기순이익",
-    "분기순이익": "당기순이익",
     "당기순손익": "당기순이익",
     "당기순이익(손실)(지배)": "당기순이익",
-    # 자산
+    "분기순이익": "당기순이익",
+
+    # ── 자산 ──────────────────────────────────────────────────
     "자산총계": "자산총계",
-    # 부채
+    "자산합계": "자산총계",          # 일부 기업 대체 계정명
+
+    # ── 부채 ──────────────────────────────────────────────────
     "부채총계": "부채총계",
-    # 자본
+    "부채합계": "부채총계",          # 일부 기업 대체 계정명
+
+    # ── 자본 ──────────────────────────────────────────────────
     "자본총계": "자본총계",
-    # 현금흐름
+    "자본합계": "자본총계",          # 일부 기업 대체 계정명
+
+    # ── 영업활동현금흐름 ──────────────────────────────────────
     "영업활동으로 인한 현금흐름": "영업활동현금흐름",
     "영업활동현금흐름": "영업활동현금흐름",
     "영업활동으로인한현금흐름": "영업활동현금흐름",
     "영업활동으로 인한 순현금흐름": "영업활동현금흐름",
+    "영업활동으로인한순현금흐름": "영업활동현금흐름",
+    # "영업활동" 단독 키: startswith 체인에서 CF 섹션 합계를 포착.
+    # sj_div="CF" 필터가 있어 IS/BS 오염 없음.
     "영업활동": "영업활동현금흐름",
-    # CAPEX (유형자산 취득만 — 무형자산 취득 별도 미포함)
+
+    # ── CAPEX (유형자산 취득 — 현금유출 기준) ────────────────
     "유형자산의 취득": "CAPEX",
+    "유형자산 취득": "CAPEX",
     "유형자산취득": "CAPEX",
     "유형자산의취득": "CAPEX",
-    "유형자산 취득": "CAPEX",
     "유형자산의 증가": "CAPEX",
-    "유형자산및무형자산의취득": "CAPEX",  # 두 항목 합산 보고 기업용
-    # EPS — 원/주 단위, 백만원 변환 없이 저장
+    "유형자산및무형자산의취득": "CAPEX",   # 합산 보고 기업
+    "유형자산 및 무형자산 취득": "CAPEX",  # 공백 변형
+    "유형자산 및 무형자산의 취득": "CAPEX",
+
+    # ── EPS (원/주 단위 — 백만원 변환 없이 저장) ─────────────
     "기본주당이익": "EPS",
     "기본주당순이익": "EPS",
+    "기본주당손익": "EPS",            # 손익 표현 기업
     "기본주당이익(손실)": "EPS",
     "기본주당손실": "EPS",
-    "보통주 기본주당이익": "EPS",        # 에이피알 등 CIS 보고 기업
+    "보통주 기본주당이익": "EPS",      # 에이피알 2024 등
     "보통주기본주당이익": "EPS",
     "보통주 기본주당순이익": "EPS",
-    "보통주 기본주당이익(손실)": "EPS",
-    "보통주 기본주당손익": "EPS",        # 에이피알 2021·2022·2025 계정명
+    "보통주 기본주당손익": "EPS",      # 에이피알 2021·2022·2025
     "보통주기본주당손익": "EPS",
+    "보통주 기본주당이익(손실)": "EPS",
 }
 
 # 재무제표 구분(sj_div)별 수집 대상 — 계정명 중복 방지
@@ -136,9 +156,13 @@ def _load_corp_codes() -> dict[str, str]:
         print(f"[DART] 기업 코드 로딩 실패: {e}")
         return {}
 
-    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-        with zf.open("CORPCODE.xml") as f:
-            tree = ET.parse(f)
+    try:
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            with zf.open("CORPCODE.xml") as f:
+                tree = ET.parse(f)
+    except Exception as e:
+        print(f"[DART] ZIP 파싱 실패: {e}")
+        return {}
 
     for item in tree.getroot().findall("list"):
         name = item.findtext("corp_name", "")
@@ -173,7 +197,6 @@ def _get_year_end_price(ticker: str, year: int) -> float | None:
     except Exception as e:
         print(f"  [FDR 오류] {ticker} {year}년: {e}")
         return None
-
 
 
 def get_market_data(company_name: str, years: list[int] | None = None) -> dict:
@@ -304,9 +327,10 @@ def get_financials(company_name: str, years: int = 5) -> dict:
 
 def _ecos_annual(stat_code: str, item_code: str, start: int, end: int) -> dict[int, float]:
     """ECOS StatisticSearch 연간 데이터 → {year: value} 딕셔너리"""
+    row_count = max(end - start + 1, 1)   # 요청 연도 수만큼 동적 산정
     try:
         url = (
-            f"{ECOS_BASE}/{ECOS_API_KEY}/json/kr/1/20"
+            f"{ECOS_BASE}/{ECOS_API_KEY}/json/kr/1/{row_count}"
             f"/{stat_code}/A/{start}/{end}/{item_code}"
         )
         resp = requests.get(url, timeout=15)
@@ -351,8 +375,12 @@ def get_macro_data(years: list[int] | None = None) -> dict:
     result = {}
     for year in years:
         # USD/KRW: FDR 연말 마지막 거래일 종가
-        df_fx = fdr.DataReader("USD/KRW", f"{year}-12-01", f"{year}-12-31")
-        usd_krw = float(df_fx["Close"].iloc[-1]) if not df_fx.empty else None
+        try:
+            df_fx = fdr.DataReader("USD/KRW", f"{year}-12-01", f"{year}-12-31")
+            usd_krw = float(df_fx["Close"].iloc[-1]) if not df_fx.empty else None
+        except Exception as e:
+            print(f"  [FDR 환율 오류] {year}년: {e}")
+            usd_krw = None
 
         entry: dict = {}
         if year in base_rates:

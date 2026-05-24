@@ -3,7 +3,8 @@ kpi_engine.py — 재무·밸류에이션 KPI 계산 엔진
 
 입력:
   financials  : {year: {"매출액": int, "영업이익": int, ...}} — 단위 백만원 (data_collector.get_financials)
-  market_data : {year: {"market_cap": int}} — 단위 백만원 (data_collector.get_market_data) [선택]
+                financials[year]["EPS"] — 원/주 단위 (백만원 변환 없음)
+  market_data : {year: {"price": float}} — 연말 종가, 원 (data_collector.get_market_data) [선택]
 
 출력:
   {year: {"OPM": float, "ROE": float, "PER": float, ...}}
@@ -55,7 +56,6 @@ def calculate_kpis(financials: dict, market_data: dict | None = None) -> dict:
         revenue    = d.get("매출액")
         op_income  = d.get("영업이익")
         net_income = d.get("당기순이익")
-        assets     = d.get("자산총계")
         liab       = d.get("부채총계")
         equity     = d.get("자본총계")
         cfo        = d.get("영업활동현금흐름")
@@ -64,9 +64,12 @@ def calculate_kpis(financials: dict, market_data: dict | None = None) -> dict:
         kpis: dict = {}
 
         # 수익성
-        kpis["OPM"]        = _pct(op_income, revenue)
-        kpis["ROE"]        = _pct(net_income, equity)
-        kpis["debt_ratio"] = _pct(liab, equity)
+        kpis["OPM"] = _pct(op_income, revenue)
+
+        # equity ≤ 0(자본잠식)이면 ROE·부채비율 의미 없음 → None
+        equity_positive = equity is not None and equity > 0
+        kpis["ROE"]        = _pct(net_income, equity) if equity_positive else None
+        kpis["debt_ratio"] = _pct(liab, equity)       if equity_positive else None
 
         # 현금흐름
         kpis["CFO_margin"]  = _pct(cfo, revenue)
