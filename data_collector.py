@@ -1,11 +1,13 @@
 import os
 import io
+import re
 import zipfile
 import datetime
 import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
 import FinanceDataReader as fdr
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,6 +17,21 @@ DART_BASE = "https://opendart.fss.or.kr/api"
 
 ECOS_API_KEY = os.getenv("ECOS_API_KEY")
 ECOS_BASE = "https://ecos.bok.or.kr/api/StatisticSearch"
+
+NAVER_CLIENT_ID     = os.getenv("NAVER_CLIENT_ID")
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET")
+NAVER_TREND_BASE    = "https://openapi.naver.com/v1/datalab/search"
+NAVER_FINANCE_BASE  = "https://finance.naver.com/item/coinfo.naver"
+
+_NAVER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://finance.naver.com",
+    "Accept-Language": "ko-KR,ko;q=0.9",
+}
 
 # ECOS 통계코드 상수
 _ECOS_BASE_RATE   = ("722Y001", "A", "0101000")   # 한국은행 기준금리 (연말 기준)
@@ -199,6 +216,17 @@ def _get_year_end_price(ticker: str, year: int) -> float | None:
         return None
 
 
+def _get_price_near_date(ticker: str, target_date: datetime.date) -> float | None:
+    """지정 날짜 이전 가장 가까운 거래일의 종가 (최대 10거래일 소급)"""
+    try:
+        start = target_date - datetime.timedelta(days=14)
+        df = fdr.DataReader(ticker, start.strftime("%Y-%m-%d"), target_date.strftime("%Y-%m-%d"))
+        return float(df["Close"].iloc[-1]) if not df.empty else None
+    except Exception as e:
+        print(f"  [FDR 오류] {ticker} {target_date}: {e}")
+        return None
+
+
 def get_market_data(company_name: str, years: list[int] | None = None) -> dict:
     """
     기업명 → 연도별 연말 종가 반환 (FinanceDataReader)
@@ -228,6 +256,42 @@ def get_market_data(company_name: str, years: list[int] | None = None) -> dict:
             print(f"  [{company_name}] {year}년 주가 없음")
             continue
         result[year] = {"price": price}
+
+    return result
+
+
+def get_current_market_data(company_name: str) -> dict:
+    """
+    현재 주가 + 1개월/3개월/6개월 등락률 반환
+
+    반환 형태:
+    {
+        "current_price": 53200.0,  # 원
+        "change_1m": 3.5,          # 1개월 등락률 (%)
+        "change_3m": -2.1,         # 3개월 등락률 (%)
+        "change_6m": 8.7,          # 6개월 등락률 (%)
+    }
+    주가 데이터 없으면 빈 dict {} 반환
+    """
+    ticker = get_stock_ticker(company_name)
+    if not ticker:
+        return {}
+
+    today = datetime.date.today()
+    current_price = _get_price_near_date(ticker, today)
+    if current_price is None:
+        print(f"[FDR] '{company_name}' 현재 주가를 가져올 수 없습니다.")
+        return {}
+
+    result: dict = {"current_price": current_price}
+
+    for months, key in [(1, "change_1m"), (3, "change_3m"), (6, "change_6m")]:
+        past_date  = today - datetime.timedelta(days=months * 30)
+        past_price = _get_price_near_date(ticker, past_date)
+        if past_price and past_price > 0:
+            result[key] = round((current_price - past_price) / past_price * 100, 2)
+        else:
+            result[key] = None
 
     return result
 
@@ -390,6 +454,255 @@ def get_macro_data(years: list[int] | None = None) -> dict:
         if usd_krw is not None:
             entry["usd_krw"] = round(usd_krw, 2)
 
+        # KOSPI(KS11), NASDAQ(IXIC) 연말 종가
+        for idx_ticker, idx_key in [("KS11", "kospi"), ("IXIC", "nasdaq")]:
+            try:
+                df_idx = fdr.DataReader(idx_ticker, f"{year}-12-01", f"{year}-12-31")
+                val = float(df_idx["Close"].iloc[-1]) if not df_idx.empty else None
+            except Exception as e:
+                print(f"  [FDR 지수 오류] {idx_ticker} {year}년: {e}")
+                val = None
+            if val is not None:
+                entry[idx_key] = round(val, 2)
+
+        if entry:
+            result[year] = entry
+
+    return result
+
+
+def get_naver_search_trend(keyword: str, start_date: str, end_date: str) -> dict:
+    """
+    네이버 데이터랩 검색 트렌드 API (Week 3 구현 예정)
+
+    Args:
+        keyword: 검색 키워드 (기업명 또는 브랜드명)
+        start_date: "YYYY-MM-DD" 형식
+        end_date:   "YYYY-MM-DD" 형식
+
+    반환 형태:
+    {
+        "YYYY-MM": 검색량_지수,  # 0~100 (상대 지수)
+        ...
+    }
+
+    API 호출 예시 (Week 3):
+        POST https://openapi.naver.com/v1/datalab/search
+        Headers: X-Naver-Client-Id, X-Naver-Client-Secret
+        Body: {
+            "startDate": start_date, "endDate": end_date, "timeUnit": "month",
+            "keywords": [{"name": keyword, "param": [keyword]}]
+        }
+    """
+    raise NotImplementedError("get_naver_search_trend: Week 3 구현 예정")
+
+
+# ── 네이버금융 컨센서스 스크래퍼 ──────────────────────────────────────────────
+
+def _parse_rating_kr(text: str) -> str:
+    """한국어 투자의견 → BUY / HOLD / SELL"""
+    if any(w in text for w in ["강력매수", "적극매수", "비중확대", "매수"]):
+        return "BUY"
+    if any(w in text for w in ["매도", "비중축소"]):
+        return "SELL"
+    return "HOLD"
+
+
+def _clean_num(text: str) -> float | None:
+    """숫자 문자열 정제 → float (쉼표·단위·공백 제거)"""
+    if not text:
+        return None
+    text = text.strip()
+    if text in ("-", "N/A", "NA", "n/a", "—", ""):
+        return None
+    cleaned = re.sub(r"[,\s원배%]", "", text)
+    try:
+        return float(cleaned) if cleaned else None
+    except ValueError:
+        return None
+
+
+def _naver_soup(ticker: str, target: str | None = None) -> BeautifulSoup | None:
+    """네이버금융 coinfo 페이지 요청 → BeautifulSoup"""
+    params: dict = {"code": ticker}
+    if target:
+        params["target"] = target
+    try:
+        resp = requests.get(NAVER_FINANCE_BASE, params=params,
+                            headers=_NAVER_HEADERS, timeout=15)
+        resp.encoding = resp.apparent_encoding or "euc-kr"
+        return BeautifulSoup(resp.text, "lxml")
+    except Exception as e:
+        print(f"  [Naver] 요청 실패 (target={target}): {e}")
+        return None
+
+
+_WISEREPORT_BASE = "https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx"
+
+
+def _wisereport_text(ticker: str) -> str:
+    """WiseReport 기업개요 페이지 텍스트 반환"""
+    try:
+        resp = requests.get(
+            _WISEREPORT_BASE, params={"cmp_cd": ticker},
+            headers=_NAVER_HEADERS, timeout=15,
+        )
+        resp.encoding = resp.apparent_encoding or "utf-8"
+        soup = BeautifulSoup(resp.text, "lxml")
+        return soup.get_text(separator=" ", strip=True)
+    except Exception as e:
+        print(f"  [WiseReport] 요청 실패: {e}")
+        return ""
+
+
+def _parse_opinion(ticker: str) -> dict:
+    """
+    WiseReport → 투자의견·목표주가·EPS·PER·애널리스트 수 파싱
+
+    페이지 내 컨센서스 블록 형태:
+      "추정기관수  {score}  {target_price}  {eps}  {per}  {count}"
+    예: "추정기관수 4.04 390,417 42,966 6.81 24"
+    """
+    result: dict = {}
+    text = _wisereport_text(ticker)
+    if not text:
+        return result
+
+    # 컨센서스 요약 블록 — 목표주가·EPS·PER·기관수 한 번에 파싱
+    m = re.search(
+        r"추정기관수\s+([\d.]+)\s+([\d,]+)\s+([\d,]+)\s+([\d.]+)\s+(\d+)",
+        text,
+    )
+    if m:
+        score        = float(m.group(1))
+        target_price = _clean_num(m.group(2))
+        forward_eps  = _clean_num(m.group(3))
+        forward_per  = float(m.group(4))
+        analyst_cnt  = int(m.group(5))
+
+        if target_price:
+            result["target_price"]  = target_price
+        if forward_eps:
+            result["forward_eps"]   = forward_eps
+        result["forward_per"]       = forward_per
+        result["analyst_count"]     = analyst_cnt
+        # 투자의견: 1(강력매도)~5(강력매수) 스케일 → BUY/HOLD/SELL
+        result["rating"] = "BUY" if score >= 3.5 else "HOLD" if score >= 2.5 else "SELL"
+
+    return result
+
+
+def get_naver_consensus(
+    company_name: str,
+    year: int | None = None,
+    prev_revenue_mil: int | None = None,
+) -> dict:
+    """
+    네이버금융 컨센서스 자동 수집 — 기업명만 넣으면 자동으로 가져옴
+
+    Args:
+        company_name    : 기업명 (한국어)
+        year            : 예상 연도 (None이면 올해+1 자동 설정)
+        prev_revenue_mil: 전년도 실제 매출액 (백만원) — expected_revenue_growth 계산용
+                          get_financials() 결과의 최근 연도 "매출액" 값을 넘기면 됨
+
+    반환 형태:
+    {
+        "company": "삼성전자",
+        "year": 2025,
+        "target_price": 82000.0,          # 원
+        "rating": "BUY",
+        "analyst_count": 32,
+        "forward_eps": 4850.0,            # 원/주
+        "forward_per": 11.2,              # 배
+        "expected_revenue_growth": 8.5,   # % (prev_revenue_mil 제공 시)
+        "expected_op_margin": 15.2,       # %
+        "expected_net_income": 26800000,  # 백만원
+    }
+    스크래핑 실패 항목은 키 자체가 없음 (None 아닌 absent)
+    """
+    ticker = get_stock_ticker(company_name)
+    if not ticker:
+        print(f"[Consensus] '{company_name}' 티커 없음")
+        return {}
+
+    if year is None:
+        today = datetime.date.today()
+        # 4월 이후면 전년도 실적 공시 완료 → 당해 연도가 forward
+        latest_actual = today.year - 1 if today.month >= 4 else today.year - 2
+        year = latest_actual + 1
+
+    print(f"[Consensus] {company_name} ({ticker}) {year}E 수집 중...")
+
+    result: dict = {"company": company_name, "year": year}
+    result.update(_parse_opinion(ticker))
+
+    found = [k for k, v in result.items() if k not in ("company", "year")]
+    print(f"  수집 항목: {found if found else '없음 — 페이지 구조 확인 필요'}")
+    return result
+
+
+def parse_consensus_csv(filepath: str, company_name: str | None = None) -> dict:
+    """
+    consensus_template.csv 파싱 → {year: {field: value}} 딕셔너리
+
+    Args:
+        filepath    : CSV 파일 경로
+        company_name: 기업명 필터 (None이면 첫 번째 기업 데이터 반환)
+                      CSV에 여러 기업이 있으면 반드시 지정 필요
+
+    CSV 컬럼:
+      company, year, forward_eps, forward_per, target_price,
+      expected_revenue_growth, expected_op_margin, expected_net_income,
+      rating, analyst_count
+
+    반환 형태:
+    {
+        2026: {
+            "forward_eps": 42966.0,
+            "target_price": 390417.0,
+            "rating": "BUY",
+            "analyst_count": 24,
+            ...
+        }
+    }
+    빈 셀은 해당 키를 포함하지 않음
+    """
+    try:
+        df = pd.read_csv(filepath)
+    except Exception as e:
+        print(f"[Consensus] CSV 파싱 실패: {e}")
+        return {}
+
+    # company_name 필터 적용
+    if company_name:
+        df = df[df["company"] == company_name]
+    elif "company" in df.columns and df["company"].nunique() > 1:
+        first = df["company"].iloc[0]
+        print(f"[Consensus] company_name 미지정 — '{first}' 데이터 사용 (총 {df['company'].nunique()}개 기업)")
+        df = df[df["company"] == first]
+
+    numeric_cols = [
+        "forward_eps", "forward_per", "target_price",
+        "expected_revenue_growth", "expected_op_margin", "expected_net_income",
+    ]
+    result: dict = {}
+    for _, row in df.iterrows():
+        year_raw = row.get("year")
+        if pd.isna(year_raw):
+            continue
+        year = int(year_raw)
+        entry: dict = {}
+        for col in numeric_cols:
+            val = row.get(col)
+            if pd.notna(val):
+                entry[col] = float(val)
+        rating = row.get("rating")
+        if pd.notna(rating):
+            entry["rating"] = str(rating).strip().upper()
+        count = row.get("analyst_count")
+        if pd.notna(count):
+            entry["analyst_count"] = int(count)
         if entry:
             result[year] = entry
 
@@ -422,9 +735,42 @@ if __name__ == "__main__":
             print(f"  {year}년: 연말 종가 {d['price']:,.0f}원")
 
     print("\n" + "="*50)
+    print("[현재 시장 데이터 테스트]")
+    for company in companies:
+        print(f"\n[{company}] 현재 주가 수집 중...")
+        curr = get_current_market_data(company)
+        if not curr:
+            print("  데이터 없음")
+            continue
+        print(f"  현재 주가: {curr['current_price']:,.0f}원")
+        for key, label in [("change_1m", "1M"), ("change_3m", "3M"), ("change_6m", "6M")]:
+            val = curr.get(key)
+            if val is None:
+                print(f"  {label}: N/A")
+            else:
+                sign = "+" if val > 0 else ""
+                print(f"  {label}: {sign}{val:.2f}%")
+
+    print("\n" + "="*50)
     print("[거시 데이터 테스트]")
     macro = get_macro_data()
     for year, d in sorted(macro.items()):
         print(f"  {year}년: 기준금리={d.get('base_rate')}% | "
               f"국고채10Y={d.get('ktb10y')}% | "
-              f"USD/KRW={d.get('usd_krw')}원")
+              f"USD/KRW={d.get('usd_krw')}원 | "
+              f"KOSPI={d.get('kospi')} | NASDAQ={d.get('nasdaq')}")
+
+    print("\n" + "="*50)
+    print("[컨센서스 스크래핑 테스트]")
+    for company in companies:
+        fin = get_financials(company, years=1)
+        prev_rev = None
+        if fin:
+            latest_year = max(fin.keys())
+            prev_rev = fin[latest_year].get("매출액")
+        print(f"\n[{company}]")
+        result = get_naver_consensus(company, prev_revenue_mil=prev_rev)
+        for k, v in result.items():
+            if k in ("company", "year"):
+                continue
+            print(f"  {k}: {v}")
