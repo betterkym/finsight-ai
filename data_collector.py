@@ -889,6 +889,7 @@ def get_krx_flow_snapshot(stock_code: str, days: int = 90) -> dict:
 
 
 def _fred_latest(series_id: str) -> dict | None:
+    """Latest FRED observation plus 3M/12M trailing change so callers can react to direction, not just presence."""
     if not FRED_API_KEY:
         return None
     try:
@@ -899,18 +900,42 @@ def _fred_latest(series_id: str) -> dict | None:
                 "api_key": FRED_API_KEY,
                 "file_type": "json",
                 "sort_order": "desc",
-                "limit": 8,
+                "limit": 400,
             },
             timeout=20,
         )
         response.raise_for_status()
+        obs = []
         for row in response.json().get("observations", []):
             value = _number(row.get("value"))
-            if value is not None:
-                return {"date": row.get("date"), "value": value, "series_id": series_id}
+            date = row.get("date")
+            if value is not None and date:
+                obs.append((date, value))
+        if not obs:
+            return None
+        latest_date, latest_value = obs[0]  # desc order: newest first
+        anchor = dt.date.fromisoformat(latest_date)
+
+        def value_on_or_before(days_back: int) -> float | None:
+            target = anchor - dt.timedelta(days=days_back)
+            for date, value in obs:
+                if dt.date.fromisoformat(date) <= target:
+                    return value
+            return None
+
+        prior_3m = value_on_or_before(90)
+        prior_12m = value_on_or_before(365)
+        change_3m = (latest_value / prior_3m - 1) * 100 if prior_3m else None
+        change_12m = (latest_value / prior_12m - 1) * 100 if prior_12m else None
+        return {
+            "date": latest_date,
+            "value": latest_value,
+            "series_id": series_id,
+            "change_3m_pct": round(change_3m, 1) if change_3m is not None else None,
+            "change_12m_pct": round(change_12m, 1) if change_12m is not None else None,
+        }
     except Exception:
         return None
-    return None
 
 
 def get_worldbank_macro_snapshot() -> dict:

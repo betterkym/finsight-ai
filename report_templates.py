@@ -183,18 +183,24 @@ def _external_market_brief(company: str, market_context: dict | None, thesis: di
         ])
     fred_fx = macro.get("fred_usd_krw") or {}
     fred_wheat = macro.get("fred_wheat") or {}
+    def _fred_signal(label, series, unit_digits):
+        value = _f(_num(series.get("value")), "", unit_digits)
+        chg = _num(series.get("change_3m_pct"))
+        trend = f" (3M {chg:+.1f}%)" if chg is not None else ""
+        return f"{label} {series.get('date','')}: {value}{trend}"
+
     if fred_fx:
         rows.append([
             "환율",
-            f"USD/KRW {fred_fx.get('date','')}: {_f(_num(fred_fx.get('value')), '', 1)}",
-            "해외 매출 환산과 원재료 수입비용을 동시에 흔드는 변수입니다.",
+            _fred_signal("USD/KRW", fred_fx, 1),
+            "해외 매출 환산과 원재료 수입비용을 동시에 흔드는 변수입니다. 상승 구간이면 원가율 압박으로 우선 읽습니다.",
             "매출 성장률 / 원가율",
         ])
     if fred_wheat:
         rows.append([
             "원재료 proxy",
-            f"Wheat {fred_wheat.get('date','')}: {_f(_num(fred_wheat.get('value')), '', 1)}",
-            "식품·소비재 기업은 원가율 변동의 배경 후보로 우선 점검합니다.",
+            _fred_signal("Wheat", fred_wheat, 1),
+            "식품·소비재 기업은 원가율 변동의 배경 후보로 우선 점검합니다. 3M 상승이면 마진 보수화 신호입니다.",
             "원가율 / OPM",
         ])
     for item in (thesis.get("context") or [])[:3]:

@@ -443,20 +443,37 @@ def _apply_external_dcf_adjustments(assumptions: dict, context: dict, thesis: di
         for item in (thesis or {}).get("context", [])
     )
     macro = drivers.get("macro", {})
+    fx = macro.get("fred_usd_krw") or {}
+    wheat = macro.get("fred_wheat") or {}
+    fx_chg = _safe_num(fx.get("change_3m_pct"))
+    wheat_chg = _safe_num(wheat.get("change_3m_pct"))
     has_cost_signal = any(keyword in text_pool for keyword in ("원가", "유가", "곡물", "소맥", "팜유", "환율", "전쟁"))
-    if has_cost_signal or macro.get("fred_wheat") or macro.get("fred_usd_krw"):
+    fx_up = fx_chg is not None and fx_chg > 1.5
+    wheat_up = wheat_chg is not None and wheat_chg > 3.0
+    # 연결만으로 발동하지 않고, 환율·원재료가 실제로 오른 구간이거나 뉴스 원가 신호가 있을 때만 마진을 보수화한다.
+    if has_cost_signal or fx_up or wheat_up:
         before = float(adjusted.get("opm", 0.0))
         haircut = 0.3
         cogs_yoy = _safe_num(latest.get("cogs_ratio_yoy_pp"))
         if cogs_yoy is not None and cogs_yoy > 0:
             haircut = min(0.8, max(0.3, cogs_yoy * 0.35))
+        if fx_up or wheat_up:
+            macro_push = max((fx_chg or 0) * 0.03, (wheat_chg or 0) * 0.02)
+            haircut = min(0.8, max(haircut, round(macro_push, 1)))
         after = round(before - haircut, 1)
         adjusted["opm"] = after
         if "opm_path" in adjusted and adjusted["opm_path"]:
             adjusted["opm_path"] = [round(float(v) - haircut, 1) if v is not None else None for v in adjusted["opm_path"]]
+        macro_bits = []
+        if fx_up:
+            macro_bits.append(f"USD/KRW 3M {fx_chg:+.1f}%")
+        if wheat_up:
+            macro_bits.append(f"소맥 3M {wheat_chg:+.1f}%")
+        if has_cost_signal:
+            macro_bits.append("뉴스 원가 신호")
         add(
             "환율·원재료 압박",
-            "뉴스/매크로 proxy에서 원가 또는 환율 키워드 감지",
+            " · ".join(macro_bits) or "원가 변수 감지",
             f"1년차 OPM {haircut:.1f}%p 하향",
             before,
             after,
@@ -656,14 +673,6 @@ multiple_valuation = calculate_multiple_valuation(
 )
 valuation_range = build_valuation_range(dcf, multiple_valuation, capital.get("current_price"))
 
-st.markdown(f"## {company} | {latest['period']}")
-st.caption(f"분석 범위 {len(kpis)}개 분기 · 비교기업 {', '.join(st.session_state.get('peer_selection', [])) or '없음'} · DART 계정 결측 {sum(item['missing_quarters'] for item in quality)}건")
-h1, h2, h3, h4 = st.columns(4)
-h1.metric("매출 YoY", _fmt(latest.get("revenue_yoy"), "%"))
-h2.metric("영업이익률", _fmt(latest.get("opm"), "%"), _fmt(latest.get("opm_qoq_pp"), "%p"))
-h3.metric("FCF 마진", _fmt(latest.get("fcf_margin"), "%"))
-h4.metric("우선 검토", f"{len(abnormal)}건", f"결측 {len(review_items)}건")
-
 export_anomalies = [{"signal": x["label"], "severity": x["severity"], "comment": x["dart_answer"]} for x in abnormal]
 html_report = generate_analysis_html_report(
     company, kpis, margin_bridge, export_anomalies, dcf,
@@ -684,10 +693,21 @@ excel = export_excel(
     tracker_commentary=tracker_commentary,
 )
 
-ab_msg, ab_html, ab_xlsx = st.columns([2.2, 1, 1])
-ab_msg.caption("📌 발간 리포트·Excel 워크북은 어느 탭에서나 이 자리에서 바로 내려받을 수 있습니다.")
-ab_html.download_button("📄 HTML 리포트", html_report.encode("utf-8"), file_name=f"FinSight_{company}_Investment_Note.html", mime="text/html", type="primary", width="stretch")
-ab_xlsx.download_button("📊 Excel 워크북", excel, file_name=f"FinSight_{company}_Analyst_Workbook.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
+head_l, head_r = st.columns([2.55, 1.45])
+with head_l:
+    st.markdown(f"## {company} | {latest['period']}")
+    st.caption(f"분석 {len(kpis)}개 분기 · 비교기업 {', '.join(st.session_state.get('peer_selection', [])) or '없음'} · 우선 검토 {len(abnormal)}건 · DART 결측 {sum(item['missing_quarters'] for item in quality)}건")
+with head_r:
+    dl1, dl2 = st.columns(2)
+    dl1.download_button("📄 발간 리포트", html_report.encode("utf-8"), file_name=f"FinSight_{company}_Investment_Note.html", mime="text/html", type="primary", width="stretch", help="브라우저용 HTML · 인쇄하면 발간용 PDF")
+    dl2.download_button("📊 모델 워크북", excel, file_name=f"FinSight_{company}_Analyst_Workbook.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch", help="수식 편집 가능한 12시트 Excel 모델")
+
+market_snap = context.get("market", {})
+h1, h2, h3, h4 = st.columns(4)
+h1.metric("현재 주가", _fmt(capital.get("current_price"), "원", 0), _fmt(market_snap.get("return_3m"), "% · 3M"))
+h2.metric("매출 YoY", _fmt(latest.get("revenue_yoy"), "%"))
+h3.metric("영업이익률", _fmt(latest.get("opm"), "%"), _fmt(latest.get("opm_qoq_pp"), "%p"))
+h4.metric("FCF 마진", _fmt(latest.get("fcf_margin"), "%"))
 st.divider()
 
 report_tab, brief_tab, tracker_tab, diagnostic_tab, peer_tab, dcf_tab, export_tab = st.tabs(
