@@ -38,9 +38,9 @@ def inject_css() -> None:
       .fs-brand span {color:#1D4E89;}
       .fs-subtitle {margin-top:9px;font-size:.92rem;color:#475467;max-width:820px;line-height:1.55;}
       .fs-product-tag {font-size:.66rem;letter-spacing:.1em;font-weight:800;color:#FFFFFF;border-radius:4px;padding:8px 12px;background:#143257;white-space:nowrap;}
-      .fs-tab-intro {background:#FFFFFF;border:1px solid #E2E8F0;border-left:4px solid #1D4E89;border-radius:0 6px 6px 0;padding:13px 18px;margin:4px 0 18px 0;}
+      .fs-tab-intro {background:#FFFFFF;border:1px solid #E2E8F0;border-left:4px solid #1D4E89;border-radius:0 6px 6px 0;padding:13px 18px;margin:4px 0 18px 0;min-height:96px;display:flex;flex-direction:column;justify-content:center;}
       .fs-tab-title {font-weight:800;color:#143257;margin-bottom:4px;font-size:1.02rem;}
-      .fs-tab-purpose {font-size:.9rem;color:#344054;margin-bottom:5px;}
+      .fs-tab-purpose {font-size:.9rem;color:#344054;margin-bottom:5px;word-break:keep-all;}
       .fs-tab-output {font-size:.74rem;color:#667085;letter-spacing:.01em;}
       .fs-note {background:#FFFFFF;border-left:3px solid #1D4E89;padding:12px 14px;color:#344054;}
       .fs-risk {background:#FFFAEB;border-left:3px solid #B54708;padding:12px 14px;}
