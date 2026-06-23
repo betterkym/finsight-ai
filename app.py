@@ -1,8 +1,6 @@
 """FinSight analyst workbench: filing-first diagnostics, peer evidence and DCF linkage."""
 from __future__ import annotations
 
-from html import escape
-
 import pandas as pd
 import streamlit as st
 
@@ -19,12 +17,13 @@ from investment_thesis import build_investment_thesis
 from kpi_engine import calculate_quarterly_kpis
 from mode_views import build_peer_benchmark, build_peer_comparison, build_tracker_table
 from report_generator import export_excel
-from report_templates import generate_analysis_summary
+from report_templates import build_report_model, generate_analysis_summary
 from research_reference import get_research_reference
 from signal_engine import attach_context, attach_peer_evidence, build_margin_bridge, scan_financial_health
 from ui_components import (
     financial_trend_chart, inject_css, peer_benchmark_chart, price_path_chart,
-    render_attribution, render_header, render_interpretation, render_landing, render_process_steps, render_quality, render_tab_intro,
+    render_attribution, render_checkpoints, render_context_items, render_header, render_interpretation,
+    render_landing, render_process_steps, render_quality, render_report, render_tab_intro,
 )
 from validation_agenda import build_data_quality_report, has_blocking_gaps
 from valuation_model import build_opm_path, build_structured_model
@@ -511,7 +510,18 @@ h2.metric("영업이익률", _fmt(latest.get("opm"), "%"), _fmt(latest.get("opm_
 h3.metric("FCF 마진", _fmt(latest.get("fcf_margin"), "%"))
 h4.metric("우선 검토", f"{len(abnormal)}건", f"결측 {len(review_items)}건")
 
-brief_tab, tracker_tab, diagnostic_tab, peer_tab, dcf_tab, export_tab = st.tabs(["01 투자판단", "02 실적 트래커", "03 이상 탐지·원인", "04 동종기업 검증", "05 가치평가", "06 Excel·근거"])
+report_tab, brief_tab, tracker_tab, diagnostic_tab, peer_tab, dcf_tab, export_tab = st.tabs(
+    ["01 리포트", "02 투자판단", "03 실적 트래커", "04 이상 탐지·원인", "05 동종기업 검증", "06 가치평가", "07 Excel·근거"]
+)
+
+with report_tab:
+    report_model = build_report_model(
+        company, kpis, st.session_state.get("dcf"),
+        price_action=price_action, interpreted=interpreted, structured=structured,
+        valuation_range=valuation_range, capital=capital, research=research,
+        thesis=thesis, tracker_commentary=tracker_commentary,
+    )
+    render_report(report_model, kpis, _fmt)
 
 with brief_tab:
     render_tab_intro("투자판단과 기대치 괴리", "실적이 좋아도 주가가 오르지 않는 이유를 펀더멘털·기대·수급·촉매 시점으로 분리합니다.", "핵심 판단 · 사실과 해석 구분 · 변동요인 분해 · 확인 포인트")
@@ -531,37 +541,9 @@ with brief_tab:
     st.markdown("#### 확인된 사실관계")
     st.dataframe(pd.DataFrame(thesis["facts"]), width="stretch", hide_index=True)
     st.markdown("#### 다음 분기에 반드시 확인할 것")
-    for idx, checkpoint in enumerate(thesis["checkpoints"], 1):
-        if isinstance(checkpoint, str):
-            st.markdown(f"- {checkpoint}")
-            continue
-        with st.container(border=True):
-            st.markdown(f"**{idx}. {checkpoint['checkpoint']}**")
-            st.caption(checkpoint.get("why", ""))
-            c_ok, c_ng, c_action = st.columns(3)
-            c_ok.markdown("**확인되면**")
-            c_ok.write(checkpoint.get("if_confirmed", "해당 해석의 신뢰도를 높입니다."))
-            c_ng.markdown("**확인 안 되면**")
-            c_ng.write(checkpoint.get("if_not_confirmed", "해당 해석의 신뢰도를 낮춥니다."))
-            c_action.markdown("**그래서 모델에서는**")
-            c_action.write(checkpoint.get("action", "연결 가정을 재검토합니다."))
-            c_action.caption(f"연결: {checkpoint.get('valuation_link', 'DCF')}")
+    render_checkpoints(thesis["checkpoints"])
     with st.expander("외부 정황 자료 (미검증 · 참고용)"):
-        for item in thesis["context"]:
-            title = escape(str(item.get("title") or "외부 자료"))
-            url = escape(str(item.get("url") or "#"), quote=True)
-            summary_text = escape(str(item.get("summary") or item.get("description") or "원문 확인 필요"))
-            meta = " · ".join(
-                str(x) for x in [item.get("date"), item.get("source"), item.get("evidence_level", "Context"), ", ".join(item.get("matched_keywords", []))] if x
-            )
-            st.markdown(
-                f"<div class='finsight-context-item'>"
-                f"<a href='{url}' target='_blank'>{title}</a><br>"
-                f"<span>{escape(meta)}</span>"
-                f"<p>{summary_text}</p>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+        render_context_items(thesis["context"])
 
 with tracker_tab:
     render_tab_intro("분기 실적 트래커", "어닝 업데이트 숫자를 옮기고 방향이 바뀐 계정을 확인합니다.", "분기 원본 · QoQ/YoY · 매출/OPM/CFO 추세 · 결측")

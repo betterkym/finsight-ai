@@ -108,6 +108,51 @@ def inject_css() -> None:
       .fs-cta-arrow {font-size:1.35rem;color:#7FB0E6;flex:none;}
       .fs-cta-ex {color:#9DBBDB;font-size:.84rem;}
       @media (max-width:1100px){.fs-feature-grid{grid-template-columns:repeat(2,1fr)}.fs-usecases{grid-template-columns:1fr}.fs-usecase{border-right:none;border-bottom:1px solid #EEF2F6}.fs-hero-lead{font-size:1.6rem}}
+      /* Publication report view */
+      .fs-rpt-head {background:#FFFFFF;border:1px solid #E2E8F0;border-radius:10px;padding:18px 22px;box-shadow:0 1px 3px rgba(16,24,40,.05);display:flex;justify-content:space-between;align-items:flex-start;gap:18px;flex-wrap:wrap;}
+      .fs-rpt-co {font-size:1.55rem;font-weight:800;letter-spacing:-.035em;color:#0B1F33;line-height:1.1;}
+      .fs-rpt-co span {color:#64748B;font-size:.98rem;font-weight:600;margin-left:6px;letter-spacing:0;}
+      .fs-rpt-meta {font-size:.78rem;color:#667085;margin-top:5px;}
+      .fs-rating-wrap {text-align:right;}
+      .fs-rating {display:inline-block;font-size:.86rem;font-weight:800;padding:6px 16px;border-radius:999px;}
+      .fs-rating-buy {background:#ECFDF3;color:#067647;border:1px solid #ABEFC6;}
+      .fs-rating-hold {background:#F1F5F9;color:#475569;border:1px solid #CBD5E1;}
+      .fs-rating-sell {background:#FEF3F2;color:#B42318;border:1px solid #FECDCA;}
+      .fs-rating-note {font-size:.72rem;color:#94A3B8;margin-top:5px;max-width:230px;}
+      .fs-rpt-verdict {border-left:4px solid #1D4E89;background:#F8FAFC;padding:12px 16px;margin:16px 0 2px;border-radius:0 8px 8px 0;}
+      .fs-rpt-verdict-k {font-size:.68rem;font-weight:800;letter-spacing:.1em;color:#1D4E89;text-transform:uppercase;}
+      .fs-rpt-verdict-t {font-size:1.05rem;font-weight:700;color:#143257;margin-top:4px;line-height:1.45;}
+      .fs-rpt-sec {font-size:1.16rem;font-weight:800;color:#143257;letter-spacing:-.02em;border-bottom:2px solid #143257;padding-bottom:7px;margin:30px 0 2px;}
+      .fs-rpt-sub {font-size:.8rem;color:#667085;margin:4px 0 2px;}
+      .fs-rpt-li {font-size:.94rem;color:#1F2937;line-height:1.55;margin:8px 0;padding:8px 0 8px 14px;border-left:2px solid #E2E8F0;}
+      .fs-rpt-li b {color:#143257;}
+      .fs-rpt-reason {font-size:.9rem;color:#344054;line-height:1.55;margin:7px 0;}
+      .fs-rpt-reason b {color:#143257;}
+      .fs-rpt-disc {font-size:.74rem;color:#94A3B8;line-height:1.5;border-top:1px solid #E2E8F0;margin-top:26px;padding-top:12px;}
+      /* Compact checkpoint cards */
+      .fs-chk {background:#FFFFFF;border:1px solid #E2E8F0;border-radius:9px;padding:12px 14px;margin-bottom:9px;box-shadow:0 1px 2px rgba(16,24,40,.04);}
+      .fs-chk-top {display:flex;justify-content:space-between;align-items:baseline;gap:12px;}
+      .fs-chk-t {font-size:.95rem;font-weight:700;color:#143257;line-height:1.4;}
+      .fs-chk-t b {color:#1D4E89;margin-right:6px;}
+      .fs-chk-link {font-size:.68rem;font-weight:700;color:#475569;background:#F1F5F9;border:1px solid #E2E8F0;border-radius:5px;padding:2px 8px;white-space:nowrap;}
+      .fs-chk-why {font-size:.8rem;color:#667085;margin:4px 0 10px;line-height:1.45;}
+      .fs-chk-grid {display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
+      .fs-chk-cell {border-radius:6px;padding:8px 10px;font-size:.82rem;line-height:1.45;}
+      .fs-chk-cell .tx {color:#344054;}
+      .fs-chk-h {font-size:.66rem;font-weight:800;letter-spacing:.02em;display:block;margin-bottom:3px;}
+      .fs-chk-ok {background:#F0FDF4;border:1px solid #BBF7D0;} .fs-chk-ok .fs-chk-h {color:#15803D;}
+      .fs-chk-ng {background:#FEF2F2;border:1px solid #FECACA;} .fs-chk-ng .fs-chk-h {color:#B91C1C;}
+      .fs-chk-act {background:#EFF4FB;border:1px solid #C9DBF0;} .fs-chk-act .fs-chk-h {color:#1D4E89;}
+      @media (max-width:900px){.fs-chk-grid{grid-template-columns:1fr;}}
+      /* External context cards */
+      .fs-ctx {background:#FFFFFF;border:1px solid #E2E8F0;border-radius:9px;padding:13px 16px;margin:9px 0;}
+      .fs-ctx-title {font-weight:700;color:#143257;text-decoration:none;font-size:.94rem;line-height:1.4;}
+      .fs-ctx-title:hover {text-decoration:underline;}
+      .fs-ctx-meta {font-size:.72rem;color:#94A3B8;margin:4px 0 9px;}
+      .fs-ctx-body {font-size:.9rem;color:#1F2937;line-height:1.62;}
+      .fs-ctx-tag {display:inline-block;font-size:.66rem;font-weight:800;color:#1D4E89;background:#EFF4FB;border:1px solid #DCE7F5;border-radius:5px;padding:1px 7px;margin-right:7px;vertical-align:middle;}
+      .fs-ctx-foot {font-size:.76rem;color:#667085;margin-top:9px;padding-top:8px;border-top:1px dashed #E2E8F0;line-height:1.5;}
+      .fs-ctx-foot b {color:#475569;font-weight:700;}
       /* Sidebar rail label (brand lives in the top bar, not repeated here) */
       [data-testid="stSidebar"] .fs-side-cap {font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;color:#7E9ABA;font-weight:800;padding:2px 0 2px;}
       /* Sidebar analysis stepper */
@@ -134,6 +179,62 @@ _TIER_BADGE = {0: "fs-b-tier0", 1: "fs-b-tier1", 2: "fs-b-tier2", 3: "fs-b-tier3
 def _esc(text) -> str:
     import html
     return html.escape(str(text if text is not None else ""))
+
+
+def render_checkpoints(checkpoints: list) -> None:
+    """Compact next-quarter checkpoint cards (confirm / not-confirm / model action)."""
+    if not checkpoints:
+        st.caption("다음 분기에 추적할 확정 포인트가 아직 없습니다.")
+        return
+    for idx, c in enumerate(checkpoints, 1):
+        if isinstance(c, str):
+            st.markdown(f'<div class="fs-chk"><div class="fs-chk-t"><b>{idx}.</b>{_esc(c)}</div></div>',
+                        unsafe_allow_html=True)
+            continue
+        link = c.get("valuation_link", "DCF")
+        why = _esc(c.get("why", ""))
+        st.markdown(
+            '<div class="fs-chk">'
+            f'<div class="fs-chk-top"><div class="fs-chk-t"><b>{idx}.</b>{_esc(c.get("checkpoint",""))}</div>'
+            f'<span class="fs-chk-link">연결 · {_esc(link)}</span></div>'
+            + (f'<div class="fs-chk-why">{why}</div>' if why else '<div style="height:6px"></div>')
+            + '<div class="fs-chk-grid">'
+            f'<div class="fs-chk-cell fs-chk-ok"><span class="fs-chk-h">확인되면</span>'
+            f'<span class="tx">{_esc(c.get("if_confirmed", "해당 해석의 신뢰도를 높입니다."))}</span></div>'
+            f'<div class="fs-chk-cell fs-chk-ng"><span class="fs-chk-h">확인 안 되면</span>'
+            f'<span class="tx">{_esc(c.get("if_not_confirmed", "해당 해석의 신뢰도를 낮춥니다."))}</span></div>'
+            f'<div class="fs-chk-cell fs-chk-act"><span class="fs-chk-h">모델 반영</span>'
+            f'<span class="tx">{_esc(c.get("action", "연결 가정을 재검토합니다."))}</span></div>'
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
+
+
+def render_context_items(items: list[dict]) -> None:
+    """External context cards: readable lead → snippet → keyword/caveat footnote."""
+    if not items:
+        st.caption("키워드가 매칭된 외부 정황 자료가 없습니다.")
+        return
+    for it in items:
+        desc = " ".join(str(it.get("description") or "").split())
+        if len(desc) > 240:
+            desc = desc[:240].rstrip() + "…"
+        if not desc:
+            desc = "제목 기준으로만 매칭된 자료입니다. 원문 확인 전에는 투자 근거로 쓰지 않습니다."
+        kws = ", ".join(it.get("matched_keywords", [])[:4]) or "키워드 미확인"
+        caveat = ("사실 확정이 아니라 가능한 원인을 넓혀 보는 참고용입니다."
+                  if it.get("source") == "Naver Blog" else "DART 숫자와 맞을 때만 해석 근거로 사용합니다.")
+        meta = " · ".join(str(x) for x in [it.get("date"), it.get("source"), it.get("evidence_level", "Context")] if x)
+        url = _esc(str(it.get("url") or "#"))
+        st.markdown(
+            '<div class="fs-ctx">'
+            f'<a class="fs-ctx-title" href="{url}" target="_blank">{_esc(it.get("title") or "외부 자료")}</a>'
+            f'<div class="fs-ctx-meta">{_esc(meta)}</div>'
+            f'<div class="fs-ctx-body"><span class="fs-ctx-tag">참고 정황</span>{_esc(desc)}</div>'
+            f'<div class="fs-ctx-foot"><b>관련 키워드:</b> {_esc(kws)} · {caveat}</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def render_attribution(attribution: list[dict]) -> None:
@@ -299,6 +400,142 @@ def render_landing(examples: list[str] | None = None) -> None:
         + '<div class="fs-cta"><span class="fs-cta-arrow">←</span>'
         + f'<div>왼쪽 사이드바에서 기업명을 입력하고 <b>분석 실행</b>을 누르면 시작됩니다.{example_text}</div>'
         + '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def valuation_bridge_chart(model: dict) -> go.Figure:
+    """Football-field style: each method's implied price vs the current price line."""
+    pts = []
+    if model.get("dcf_price"):
+        pts.append(("DCF", float(model["dcf_price"]), "#94A3B8"))
+    if model.get("target_high") and model.get("target_low"):
+        pts.append(("교차 상단", float(model["target_high"]), "#C7D2DE"))
+    if model.get("target_mid"):
+        pts.append(("교차검증 중앙", float(model["target_mid"]), "#1D4E89"))
+    if model.get("target_low") and model.get("target_high"):
+        pts.append(("교차 하단", float(model["target_low"]), "#C7D2DE"))
+    for t in (model.get("broker_targets") or [])[:3]:
+        v = t.get("target_price")
+        if v:
+            pts.append((f"참고·{str(t.get('source',''))[:9]}", float(v), "#E2E8F0"))
+    labels = [p[0] for p in pts][::-1]
+    values = [p[1] for p in pts][::-1]
+    colors = [p[2] for p in pts][::-1]
+    fig = go.Figure(go.Bar(
+        y=labels, x=values, orientation="h", marker_color=colors,
+        text=[f"{v:,.0f}" for v in values], textposition="outside", cliponaxis=False,
+    ))
+    cur = model.get("current_price")
+    if cur:
+        fig.add_vline(x=float(cur), line_dash="dash", line_color="#B42318", line_width=2)
+        fig.add_annotation(x=float(cur), y=len(labels) - 0.4, text=f"현재가 {cur:,.0f}",
+                           showarrow=False, font={"size": 11, "color": "#B42318"}, xshift=2, yshift=12)
+    fig.update_layout(
+        height=max(190, 70 + 34 * len(pts)), margin={"l": 10, "r": 30, "t": 38, "b": 10},
+        title={"text": "방법별 산정가치 vs 현재가 (원)", "font": {"size": 12, "color": "#475467"}},
+        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF", showlegend=False,
+        xaxis={"showgrid": True, "gridcolor": "#EEF2F6"},
+    )
+    return fig
+
+
+def _rpt_section(title: str, sub: str | None = None) -> None:
+    html = f'<div class="fs-rpt-sec">{_esc(title)}</div>'
+    if sub:
+        html += f'<div class="fs-rpt-sub">{_esc(sub)}</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+_RATING_CLS = {"비중확대": "fs-rating-buy", "중립": "fs-rating-hold", "비중축소": "fs-rating-sell", "의견 보류": "fs-rating-hold"}
+
+
+def render_report(model: dict, kpis: pd.DataFrame, fmt) -> None:
+    """Publication-style equity research one-pager rendered with charts and tables."""
+    code = f"<span>{_esc(model['code'])}</span>" if model.get("code") else ""
+    rating_cls = _RATING_CLS.get(model["rating"], "fs-rating-hold")
+    st.markdown(
+        '<div class="fs-rpt-head"><div>'
+        f'<div class="fs-rpt-co">{_esc(model["company"])}{code}</div>'
+        f'<div class="fs-rpt-meta">{_esc(model["period"])} 기준 · 생성 {_esc(model["gen_date"])} · DART 재무·공시 / 시세 / 리서치 참고</div>'
+        '</div><div class="fs-rating-wrap">'
+        f'<span class="fs-rating {rating_cls}">정량 투자의견 · {_esc(model["rating"])}</span>'
+        f'<div class="fs-rating-note">{_esc(model["rating_note"])}</div>'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("현재가", fmt(model.get("current_price"), "원", 0))
+    c2.metric("산정가치(중앙)", fmt(model.get("target_mid"), "원", 0), fmt(model.get("upside"), "% vs 현재가"))
+    c3.metric("DCF 주당가치", fmt(model.get("dcf_price"), "원", 0), fmt(model.get("dcf_gap"), "%"))
+    c4.metric("산정가치 범위", f"{fmt(model.get('target_low'),'',0)}~{fmt(model.get('target_high'),'원',0)}")
+    if model.get("verdict"):
+        st.markdown(
+            '<div class="fs-rpt-verdict"><div class="fs-rpt-verdict-k">핵심 결론</div>'
+            f'<div class="fs-rpt-verdict-t">{_esc(model["verdict"])}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    _rpt_section("I. Investment Summary")
+    st.markdown("".join(f'<div class="fs-rpt-li">{p}</div>' for p in model["summary_points"]), unsafe_allow_html=True)
+
+    _rpt_section("II. 실적 리뷰", f"{model['period']} 기준 · 분기 추세와 핵심 계정")
+    if not kpis.empty:
+        st.plotly_chart(financial_trend_chart(kpis), width="stretch")
+    snap = pd.DataFrame(model["snapshot"], columns=["지표", "값", "변화", "코멘트"])
+    st.dataframe(snap, width="stretch", hide_index=True,
+                 column_config={"코멘트": st.column_config.TextColumn("코멘트", width="large")})
+    if model.get("thesis"):
+        st.markdown(f'<div class="fs-rpt-reason">{_esc(model["thesis"])}</div>', unsafe_allow_html=True)
+    for card in model.get("tracker_commentary", [])[:3]:
+        st.markdown(f'<div class="fs-rpt-li"><b>{_esc(card.get("title"))}</b> — {_esc(card.get("read"))}</div>', unsafe_allow_html=True)
+
+    _rpt_section("III. 밸류에이션", "목표가 한 점이 아니라 방법별 밴드로 본다")
+    vcol1, vcol2 = st.columns([3, 2])
+    with vcol1:
+        st.plotly_chart(valuation_bridge_chart(model), width="stretch")
+    with vcol2:
+        val_df = pd.DataFrame(model["valuation_rows"], columns=["방법", "주당가치", "현재가 대비", "비고"])
+        st.dataframe(val_df, width="stretch", hide_index=True,
+                     column_config={"비고": st.column_config.TextColumn("비고", width="medium")})
+    w = model.get("wacc") or {}
+    if w:
+        st.caption(
+            f"WACC {fmt(w.get('wacc'),'%',2)} = Rf {fmt(w.get('rf'),'%')} + β {fmt(w.get('beta'),'',3)} "
+            f"× ERP {fmt(w.get('erp'),'%')} → Ke {fmt(w.get('cost_equity'),'%')} · β 산출 {w.get('beta_source','')}"
+        )
+    if model.get("opm_path"):
+        st.caption("OPM 경로(판관비 bottom-up): " + " → ".join(fmt(v, "%") for v in model["opm_path"]))
+    if model.get("terminal_share") is not None:
+        st.caption(f"터미널가치 비중 {fmt(model['terminal_share'],'%')} — 잔존가치 의존도·할인율 민감도 동반 확인")
+
+    if model.get("attribution"):
+        _rpt_section("IV. 주가 괴리 분석", "실적과 주가가 따로 움직인 이유를 네 축으로 분해")
+        if any(model["frame"].get(k) is not None for k in ("ret_1m", "ret_3m", "ret_6m")):
+            st.plotly_chart(price_path_chart(model["frame"]), width="stretch")
+        render_attribution(model["attribution"])
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+        for i, reason in enumerate(model["gap_reasons"], 1):
+            st.markdown(f'<div class="fs-rpt-reason">{i}. {reason}</div>', unsafe_allow_html=True)
+
+    _rpt_section("V. 리스크 및 체크포인트", "확인되면 무엇을 바꾸고, 아니면 무엇을 보수적으로 둘지")
+    if model["decision_rows"]:
+        dec_df = pd.DataFrame(model["decision_rows"], columns=["확인할 것", "확인되면", "확인 안 되면", "가정 조정"])
+        st.dataframe(dec_df, width="stretch", hide_index=True)
+    for idx, item in enumerate(model.get("interpreted", []), 1):
+        I = item.get("interpretation", {})
+        top = (I.get("cause_candidates") or [{}])[0]
+        cause = f" · 원인 후보: [{top.get('evidence_level','')}] {top.get('cause','')}" if top.get("cause") else ""
+        st.markdown(
+            f'<div class="fs-rpt-li"><b>{idx}. {_esc(I.get("headline", item.get("label","")))}</b> '
+            f'(해석 신뢰도 {_esc(I.get("confidence",""))}){_esc(cause)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        '<div class="fs-rpt-disc">본 자료는 DART 재무 패턴과 공시·뉴스·리서치 참고자료를 함께 검토한 자료입니다. '
+        '‘정량 투자의견’은 교차검증 산정가치와 현재가의 괴리에서 기계적으로 도출한 참고치이며 공식 투자의견이 아닙니다. '
+        '투자 판단은 다음 분기 확인되는 실적과 수급을 함께 보아야 합니다.</div>',
         unsafe_allow_html=True,
     )
 
