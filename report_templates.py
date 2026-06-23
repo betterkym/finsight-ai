@@ -516,7 +516,7 @@ def generate_analysis_summary(
             f"× ERP {_f(w.get('erp'), '%')} → Ke {_f(w.get('cost_equity'), '%')} (β 산출: {_clean(w.get('beta_source'))})"
         )
     if m["opm_path"]:
-        lines.append("- **OPM 경로(판관비 bottom-up)**: " + " → ".join(_f(v, "%") for v in m["opm_path"]))
+        lines.append("- **OPM 경로(판관비 Bottom-up)**: " + " → ".join(_f(v, "%") for v in m["opm_path"]))
     if m["terminal_share"] is not None:
         lines.append(f"- 터미널가치 비중 {_f(m['terminal_share'], '%')} — 아래 보수 조합으로 DCF 상단을 눌러 본 뒤 사용")
     tv = m.get("terminal_guidance") or {}

@@ -434,7 +434,7 @@ _LANDING_FEATURES = [
     ("이상 탐지", "전 계정을 자체 과거 범위와 비교해, 통계적으로 벗어난 항목만 가려냅니다."),
     ("원인 추적", "DART 주석·공시·뉴스에서 변화의 원인을 근거 강도순으로, 확인 절차까지 함께 제시합니다."),
     ("동종기업 검증", "같은 신호가 회사만의 문제인지 업종 공통 현상인지 자동 추천된 비교군으로 가립니다."),
-    ("가치평가 연결", "판관비 bottom-up OPM·동종기업 베타로 DCF·PER·EV/EBITDA를 교차검증합니다."),
+    ("가치평가 연결", "판관비 Bottom-up OPM·동종기업 베타로 DCF·PER·EV/EBITDA를 교차검증합니다."),
 ]
 
 _LANDING_USECASES = [
@@ -472,7 +472,7 @@ def render_process_steps() -> None:
 
 _HERO_LEAD = '숫자의 변화에서 <em>Why</em>를 찾고, <em>Valuation</em>까지 잇습니다.'
 _HERO_SUB = ('DART 재무·공시, 시세·수급, 동종기업을 한자리에서 교차검증합니다. '
-             '이상 신호를 자동으로 짚어 원인을 근거 강도순으로 제시하고, bottom-up DCF 가정으로 연결합니다.')
+             '이상 신호를 자동으로 짚어 원인을 근거 강도순으로 제시하고, Bottom-up DCF 가정으로 연결합니다.')
 
 
 def render_landing(examples: list[str] | None = None) -> None:

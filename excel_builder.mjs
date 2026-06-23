@@ -210,7 +210,7 @@ const aRows=[
 dcf.getRange("A6:D22").values=aRows; tableBody(dcf,"A6:D22"); dcf.getRange("B6:B22").format={fill:C.yellow,font:{color:C.input}};
 for(let r=6;r<=19;r++) if(r!==16&&r!==20&&r!==21&&r!==22) dcf.getRange(`B${r}`).format.numberFormat=pctFmt;
 dcf.getRange("B16").format.numberFormat=multipleFmt; dcf.getRange("B20:B22").format.numberFormat=countFmt; dcf.getRange("B21").format.numberFormat=amountFmt;
-section(dcf,"A24:H24","예측과 FCFF 빌드"); dcf.getRange("A25:H25").values=[["항목","LTM",`${data.forecastStart}E`,`${data.forecastStart+1}E`,`${data.forecastStart+2}E`,`${data.forecastStart+3}E`,`${data.forecastStart+4}E`,"수식 설명"]]; header(dcf,"A25:H25");
+section(dcf,"A24:H24","예측과 FCFF Build"); dcf.getRange("A25:H25").values=[["항목","LTM",`${data.forecastStart}E`,`${data.forecastStart+1}E`,`${data.forecastStart+2}E`,`${data.forecastStart+3}E`,`${data.forecastStart+4}E`,"수식 설명"]]; header(dcf,"A25:H25");
 dcf.getRange("A26:A38").values=[["매출"],["성장률"],["EBIT 마진"],["EBIT"],["현금세금"],["NOPAT"],["D&A"],["CAPEX"],["NWC"],["NWC 증감"],["FCFF"],["할인계수"],["FCFF 현재가치"]];
 dcf.getRange("B26").values=[[data.ltmRevenue]]; dcf.getRange("B28").values=[[pct(latest.opm)]]; dcf.getRange("B29").formulas=[["=B26*B28"]]; dcf.getRange("B31").formulas=[["=B29*(1-$B$13)"]]; dcf.getRange("B32").formulas=[["=B26*$B$10"]]; dcf.getRange("B33").formulas=[["=B26*$B$11"]]; dcf.getRange("B34").formulas=[["=B26*$B$12"]];
 for(let col=3;col<=7;col++){
@@ -226,7 +226,7 @@ for(let col=3;col<=7;col++){
   dcf.getRange(`${L}32`).formulas=[[`=${L}26*$B$10`]]; dcf.getRange(`${L}33`).formulas=[[`=${L}26*$B$11`]]; dcf.getRange(`${L}34`).formulas=[[`=${L}26*$B$12`]]; dcf.getRange(`${L}35`).formulas=[[`=${L}34-${P}34`]];
   dcf.getRange(`${L}36`).formulas=[[`=${L}31+${L}32-${L}33-${L}35`]]; dcf.getRange(`${L}37`).formulas=[[`=1/(1+$B$42)^${col-2}`]]; dcf.getRange(`${L}38`).formulas=[[`=${L}36*${L}37`]];
 }
-dcf.getRange("H26:H38").values=[["직전 매출 × (1+성장률)"],["선형 fade: 1년차→5년차"],["가능 시 bottom-up 판관비 OPM 경로; 아니면 선형 fade"],["매출 × EBIT 마진"],["EBIT × 세율"],["EBIT − 현금세금"],["매출 × D&A 비율"],["매출 × CAPEX 비율"],["매출 × NWC 비율"],["기말 NWC − 직전 NWC"],["NOPAT + D&A - CAPEX - ΔNWC"],["1/(1+WACC)^t"],["FCFF × 할인계수"]];
+dcf.getRange("H26:H38").values=[["직전 매출 × (1+성장률)"],["선형 fade: 1년차→5년차"],["가능 시 Bottom-up 판관비 OPM 경로; 아니면 선형 fade"],["매출 × EBIT 마진"],["EBIT × 세율"],["EBIT − 현금세금"],["매출 × D&A 비율"],["매출 × CAPEX 비율"],["매출 × NWC 비율"],["기말 NWC − 직전 NWC"],["NOPAT + D&A - CAPEX - ΔNWC"],["1/(1+WACC)^t"],["FCFF × 할인계수"]];
 for(const row of [27,28,37]) dcf.getRange(`B${row}:G${row}`).format.numberFormat=pctFmt; for(const row of [26,29,30,31,32,33,34,35,36,38]) dcf.getRange(`B${row}:G${row}`).format.numberFormat=amountFmt;
 section(dcf,"A40:D40","밸류에이션 산출과 점검"); dcf.getRange("A41:B52").values=[["자기자본비용",null],["WACC",null],["예측 FCFF 현재가치",null],["터미널가치",null],["터미널 현재가치",null],["기업가치(EV)",null],["주주가치",null],["주당 적정가",null],["TV / EV",null],["WACC-g 스프레드",null],["상승/(하락) 여력",null],["모델 상태",null]];
 dcf.getRange("B41").formulas=[["=$B$14+$B$16*$B$15"]]; dcf.getRange("B42").formulas=[["=B41*(1-$B$17)+$B$18*(1-$B$13)*$B$17"]]; dcf.getRange("B43").formulas=[["=SUM(C38:G38)"]]; dcf.getRange("B44").formulas=[["=G36*(1+$B$19)/(B42-$B$19)"]]; dcf.getRange("B45").formulas=[["=B44*G37"]]; dcf.getRange("B46").formulas=[["=B43+B45"]]; dcf.getRange("B47").formulas=[["=B46-$B$21"]]; dcf.getRange("B48").formulas=[["=B47*100000000/$B$20"]]; dcf.getRange("B49").formulas=[["=B45/B46"]]; dcf.getRange("B50").formulas=[["=B42-$B$19"]]; dcf.getRange("B51").formulas=[["=B48/$B$22-1"]]; dcf.getRange("B52").formulas=[["=IF(AND(B50>=2%,B49<=75%,B20>0),\"PASS\",\"REVIEW\")"]];
@@ -293,20 +293,20 @@ const sourceRows=[
   ]),
 ];
 checks.getRange(`A18:I${17+sourceRows.length}`).values=sourceRows; tableBody(checks,`A18:I${17+sourceRows.length}`);
-section(checks,"A28:J28","버전 로그"); checks.getRange("A29:D32").values=[["버전","일자","변경","작성"],["v3.0",new Date().toISOString().slice(0,10),"Bottom-up 판관비 빌드, 매출 산업/점유율 분해, peer-beta WACC, 인과 해석","FinSight"],["v2.0",data.asOf,"드라이버 DCF, 기대치 괴리, 지분, 다방법 밸류에이션","FinSight"],["v1.0",data.asOf,"DART 분기 트래커와 간이 DCF","FinSight"]]; header(checks,"A29:D29"); tableBody(checks,"A30:D32"); checks.freezePanes.freezeRows(5); widths(checks,{A:28,B:16,C:13,D:14,E:15,F:48,G:18,H:14,I:48,J:12});
+section(checks,"A28:J28","버전 로그"); checks.getRange("A29:D32").values=[["버전","일자","변경","작성"],["v3.0",new Date().toISOString().slice(0,10),"Bottom-up 판관비 Build, 매출 산업/점유율 분해, peer-beta WACC, 인과 해석","FinSight"],["v2.0",data.asOf,"드라이버 DCF, 기대치 괴리, 지분, 다방법 밸류에이션","FinSight"],["v1.0",data.asOf,"DART 분기 트래커와 간이 DCF","FinSight"]]; header(checks,"A29:D29"); tableBody(checks,"A30:D32"); checks.freezePanes.freezeRows(5); widths(checks,{A:28,B:16,C:13,D:14,E:15,F:48,G:18,H:14,I:48,J:12});
 
 // 08 Revenue Build — industry vs share decomposition (reference: 산업성장률 + 점유율 변화율)
 const sm = data.structured || {};
 const revModel = sm.revenue || {}; const sgaModel = sm.sga || {}; const depModel = sm.depreciation || {}; const waccModel = sm.wacc || {};
 const revBuild = wb.worksheets.add("08 Revenue Build");
-title(revBuild, `${data.company} | 매출 빌드`, revModel.method || "기업성장률 ≈ 산업성장률(동종 합산 proxy) + 점유율 변화 / 인플레이션 교차검증", "I");
+title(revBuild, `${data.company} | 매출 Build`, revModel.method || "기업성장률 ≈ 산업성장률(동종 합산 proxy) + 점유율 변화 / 인플레이션 교차검증", "I");
 section(revBuild,"A4:I4","과거 성장률 분해");
 revBuild.getRange("A5:E5").values=[["연도","기업 성장률","산업(동종 합산 proxy)","점유율 기여","실질(ex-CPI)"]]; header(revBuild,"A5:E5");
 const rh=(revModel.history||[]).filter(r=>r.company_growth!==null).map(r=>[r.year,pct(r.company_growth),pct(r.industry_growth),pct(r.share_growth),pct(r.real_growth)]);
 revBuild.getRange(`A6:E${5+Math.max(rh.length,1)}`).values=rh.length?rh:[["과거 데이터 없음",null,null,null,null]]; tableBody(revBuild,`A6:E${5+Math.max(rh.length,1)}`);
 revBuild.getRange(`B6:E${5+Math.max(rh.length,1)}`).format.numberFormat=pctFmt;
 const rEnd=5+Math.max(rh.length,1);
-section(revBuild,`A${rEnd+2}:I${rEnd+2}`,"전망 빌드 — 파란 셀(산업/점유율 가정) 편집");
+section(revBuild,`A${rEnd+2}:I${rEnd+2}`,"전망 Build — 파란 셀(산업/점유율 가정) 편집");
 const fr=rEnd+3;
 revBuild.getRange(`A${fr}:G${fr}`).values=[["동인","가정",`${data.forecastStart}E`,`${data.forecastStart+1}E`,`${data.forecastStart+2}E`,`${data.forecastStart+3}E`,`${data.forecastStart+4}E`]]; header(revBuild,`A${fr}:G${fr}`);
 revBuild.getRange(`A${fr+1}:B${fr+4}`).values=[["산업 성장률(산업)",pct(revModel.industry_growth_avg)],["점유율 기여(점유율)",pct(revModel.share_growth_avg)],["기업 성장률 = 합",null],["매출(억원)",null]];
@@ -326,7 +326,7 @@ widths(revBuild,{A:26,B:18,C:14,D:14,E:14,F:14,G:14,H:12,I:12}); revBuild.freeze
 
 // 09 Cost Structure — SG&A 4-way build feeding OPM bottom-up
 const cost = wb.worksheets.add("09 Cost Structure");
-title(cost, `${data.company} | 원가구조 & 판관비 빌드`, sgaModel.method || "판관비 = 인건비성(임금) + 변동비(매출연동) + 고정비(CPI) + 대손(매출연동) → OPM = 매출총이익률 − 판관비율", "I");
+title(cost, `${data.company} | 원가구조 & 판관비 Build`, sgaModel.method || "판관비 = 인건비성(임금) + 변동비(매출연동) + 고정비(CPI) + 대손(매출연동) → OPM = 매출총이익률 − 판관비율", "I");
 section(cost,"A4:I4","판관비 분해 (LTM)");
 cost.getRange("A5:E5").values=[["항목","판관비 비중","LTM (억원)","매출 대비","추정 동인"]]; header(cost,"A5:E5");
 const comp=sgaModel.components||[];
@@ -361,7 +361,7 @@ for(let col=3;col<=7;col++){const L=String.fromCharCode(64+col),P=String.fromCha
 for(const r of [fb+2,fb+3,fb+4,fb+5,fb+6,fb+7]) cost.getRange(`B${r}:G${r}`).format.numberFormat=amountFmt;
 for(const r of [fb+8,fb+9]) cost.getRange(`B${r}:G${r}`).format.numberFormat=pctFmt;
 tableBody(cost,`A${fb+2}:G${fb+9}`);
-cost.getRange(`A${fb+11}`).values=[[`해석: 변동비는 매출에 비례, 인건비·고정비는 임금/물가로 escalate. 이 빌드의 Implied OPM(${fb+9}행)을 '05 DCF'의 OPM fade 가정과 대조해 마진 가정의 현실성을 점검.`]];
+cost.getRange(`A${fb+11}`).values=[[`해석: 변동비는 매출에 비례, 인건비·고정비는 임금/물가로 escalate. 이 Build의 Implied OPM(${fb+9}행)을 '05 DCF'의 OPM fade 가정과 대조해 마진 가정의 현실성을 점검.`]];
 cost.getRange(`A${fb+11}:I${fb+11}`).format={font:{italic:true,color:C.muted},wrapText:true};
 // Depreciation split
 const ds=fb+13;

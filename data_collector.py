@@ -570,9 +570,9 @@ def recommend_peers(company: str, limit: int = 2) -> dict:
                 "company": resolved,
                 "peer_group": group,
                 "peers": [member for member in members if member != resolved][:limit],
-                "method": "Curated listed-company peer set; business model and end-market similarity",
+                "method": "검증된 상장 동종기업 세트 · 사업모델·전방시장 유사성 기준",
             }
-    return {"company": resolved, "peer_group": "Unclassified", "peers": [], "method": "Manual review required"}
+    return {"company": resolved, "peer_group": "미분류", "peers": [], "method": "직접 검토 필요"}
 
 
 def get_recent_disclosures(company: str, days: int = 365, limit: int = 30) -> list[dict]:

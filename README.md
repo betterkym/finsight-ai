@@ -23,7 +23,7 @@
 | `03 실적 트래커` | 분기 원본, QoQ/YoY, 매출·OPM·CFO 추세, 최신 분기 변화 해석과 결측 확인 |
 | `04 이상 탐지·원인` | 13개 지표 전수 판정과 DART 내부 원인·근거·확인 절차 확인 |
 | `05 동종기업 검증` | 자동 추천 peer set의 최신 중앙값과 상대 격차 확인 |
-| `06 가치평가` | bottom-up 매출·판관비·WACC 빌드, DCF·PER·EV/EBITDA 교차검증, 베타 guardrail |
+| `06 가치평가` | Bottom-up 매출·판관비·WACC Build, DCF·PER·EV/EBITDA 교차검증, 베타 guardrail |
 | `07 Excel·근거` | 재현 가능한 Analyst Workbook과 Markdown 리포트 다운로드 |
 
 ## 자동 수집 범위
@@ -46,7 +46,7 @@
 ## Analyst Workbook
 
 다운로드 Excel은 다음 12개 시트로 구성됩니다. 단일 OPM 추정이 아니라 매출·원가를
-bottom-up으로 재구성하는 농심 DCF 레퍼런스 로직을 그대로 옮겼습니다.
+Bottom-up으로 재구성하는 농심 DCF 레퍼런스 로직을 그대로 옮겼습니다.
 
 | 시트 | 내용 |
 |---|---|
@@ -59,12 +59,12 @@ bottom-up으로 재구성하는 농심 DCF 레퍼런스 로직을 그대로 옮�
 | `06 Scenarios` | Bear/Base/Bull 수식 재계산 |
 | `07 Checks Sources` | 데이터 품질, 모델 점검, 출처와 버전 |
 | `08 Revenue Build` | 매출 = 산업성장률(동종 합산 proxy) + 점유율 변화 / CPI 교차검증 |
-| `09 Cost Structure` | 판관비 = 인건비성(임금)+변동비(매출)+고정비(CPI)+대손 → bottom-up OPM, 감가상각 배분 |
+| `09 Cost Structure` | 판관비 = 인건비성(임금)+변동비(매출)+고정비(CPI)+대손 → Bottom-up OPM, 감가상각 배분 |
 | `10 WACC & Beta` | 동종기업 베타 unlever→relever, CAPM·WACC 브릿지 |
 | `11 Causal Read` | 주가 기여 분해와 이상신호별 원인 해석(근거 강도 표기) |
 
 입력 셀(파란색·노란색)과 수식 셀을 구분하며, 값이 아니라 수식이 남도록 생성합니다.
-`09 Cost Structure`의 bottom-up Implied OPM을 `05 DCF`의 OPM 가정과 대조해 마진의 현실성을 점검합니다.
+`09 Cost Structure`의 Bottom-up Implied OPM을 `05 DCF`의 OPM 가정과 대조해 마진의 현실성을 점검합니다.
 
 ## 실행
 
@@ -112,7 +112,7 @@ DART 키는 필수입니다. ECOS·뉴스 키가 없으면 가능한 분석은 �
 | `excel_builder.mjs` | 수식 기반 12시트 Analyst Workbook 생성 |
 | `report_generator.py` | Streamlit 다운로드용 Excel 브리지 |
 | `report_templates.py` | 발간형 투자 리포트(.md)와 in-app 리포트 모델 생성 |
-| `valuation_model.py` | 매출·판관비·WACC bottom-up 빌드 |
+| `valuation_model.py` | 매출·판관비·WACC Bottom-up Build |
 | `interpretation.py` | 이상신호·주가 괴리의 인과 해석과 확인 절차 |
 | `ui_components.py` | CSS·차트·발간 리포트·랜딩 등 화면 컴포넌트 |
 

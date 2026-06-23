@@ -670,7 +670,7 @@ if analyze or st.session_state.pop("auto_run", False):
             st.session_state.update({
                 "kpis": loaded, "peers": _load_peers(peers, quarters_input), "company": resolved,
                 "quarters": quarters_input, "peer_selection": list(peers),
-                "peer_method": resolved_peer_rec["method"] if auto_peers else "User selected",
+                "peer_method": resolved_peer_rec["method"] if auto_peers else "직접 선택",
                 "context": _load_context(resolved, str(loaded.iloc[-1].get("stock_code", ""))),
             })
             for key in ("dcf", "dcf_is_auto", "dcf_version"):
@@ -953,7 +953,7 @@ with dcf_tab:
             },
         )
 
-    st.markdown("#### 매출·원가 구조 빌드 — OPM을 단일 추정이 아닌 바텀업으로 재구성")
+    st.markdown("#### 매출·원가 구조 Build — OPM을 단일 추정이 아닌 Bottom-up으로 재구성")
     rev_model, sga_model, wacc_model = structured["revenue"], structured["sga"], structured["wacc"]
     rb1, rb2 = st.columns([3, 2])
     with rb1:
@@ -1024,7 +1024,7 @@ with dcf_tab:
         recalculate = st.form_submit_button("수정 가정으로 재계산", type="primary", width="stretch")
     st.caption(f"베타 적용 근거: {structured['wacc']['beta_source']} (β={wacc_beta_default:.3f}) · 시장회귀 β={structured['wacc']['market_beta']:.3f}")
     if opm_build:
-        st.caption("자동 DCF의 OPM은 단순 추세선이 아니라 판관비 바텀업 빌드로 산출됩니다 — 연도별 " + " → ".join(f"{v:.1f}%" for v in opm_build["opm_path"] if v is not None))
+        st.caption("자동 DCF의 OPM은 단순 추세선이 아니라 판관비 Bottom-up Build로 산출됩니다 — 연도별 " + " → ".join(f"{v:.1f}%" for v in opm_build["opm_path"] if v is not None))
     if recalculate:
         assumptions = {
             "revenue_growth": growth, "revenue_growth_terminal": growth_terminal,
