@@ -211,7 +211,7 @@ def interpret_signal(item: dict, context_pool: list[dict], research: dict, marke
 def _headline(metric: str, item: dict, candidates: list[dict]) -> str:
     if candidates:
         return f"{item['label']} {_DIRECTION.get(metric,'이탈')} — {candidates[0]['cause'][:46]}"
-    return f"{item['label']} {_DIRECTION.get(metric,'이탈')} — 근거 대기"
+    return f"{item['label']} {_DIRECTION.get(metric,'이탈')} — 외부 근거 미확인"
 
 
 # Concrete verification recipes: for each metric, *where* to look (a named DART note,

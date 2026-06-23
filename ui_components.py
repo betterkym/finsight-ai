@@ -170,6 +170,29 @@ def inject_css() -> None:
       .fs-ctx-tag {display:inline-block;font-size:.66rem;font-weight:800;color:#1D4E89;background:#EFF4FB;border:1px solid #DCE7F5;border-radius:5px;padding:1px 7px;margin-right:7px;vertical-align:middle;}
       .fs-ctx-foot {font-size:.76rem;color:#667085;margin-top:9px;padding-top:8px;border-top:1px dashed #E2E8F0;line-height:1.5;}
       .fs-ctx-foot b {color:#475569;font-weight:700;}
+      /* Tracker '이번 분기 변화 해석' cards */
+      .fs-tc-grid {display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+      .fs-tc {background:#FFFFFF;border:1px solid #E2E8F0;border-radius:10px;padding:15px 17px;box-shadow:0 1px 2px rgba(16,24,40,.04);}
+      .fs-tc-top {display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:5px;}
+      .fs-tc-title {font-size:.97rem;font-weight:800;color:#143257;line-height:1.35;word-break:keep-all;}
+      .fs-tc-meta {font-size:.72rem;color:#94A3B8;margin-bottom:10px;}
+      .fs-tc-read {font-size:.9rem;color:#1F2937;line-height:1.6;word-break:keep-all;padding-bottom:11px;border-bottom:1px solid #EEF2F6;margin-bottom:10px;}
+      .fs-tc-kv {display:grid;grid-template-columns:58px 1fr;gap:10px;margin:8px 0;align-items:start;}
+      .fs-tc-kv .k {font-size:.72rem;font-weight:800;color:#1D4E89;padding-top:1px;}
+      .fs-tc-kv .v {font-size:.86rem;color:#344054;line-height:1.5;word-break:keep-all;}
+      .fs-tc-ev {margin-top:11px;font-size:.78rem;color:#64748B;}
+      .fs-tc-ev summary {cursor:pointer;font-weight:700;color:#475569;}
+      .fs-tc-ev ul {margin:6px 0 0 0;padding-left:18px;} .fs-tc-ev li {margin:3px 0;}
+      @media (max-width:1000px){.fs-tc-grid{grid-template-columns:1fr;}}
+      /* Interpretation twin boxes (공시 설명 범위 / 재검토 신호) */
+      .fs-twin {display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;}
+      .fs-twin-box {background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:11px 13px;}
+      .fs-twin-warn {background:#FFFBEB;border-color:#FDE68A;}
+      .fs-twin-h {font-size:.74rem;font-weight:800;color:#475569;margin-bottom:6px;letter-spacing:.01em;}
+      .fs-twin-warn .fs-twin-h {color:#9A6700;}
+      .fs-twin-b {font-size:.85rem;color:#344054;line-height:1.55;word-break:keep-all;}
+      .fs-twin-b .ev {display:block;color:#64748B;font-size:.78rem;margin-top:4px;}
+      @media (max-width:900px){.fs-twin{grid-template-columns:1fr;}}
       /* Sidebar rail label (brand lives in the top bar, not repeated here) */
       [data-testid="stSidebar"] .fs-side-cap {font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;color:#7E9ABA;font-weight:800;padding:2px 0 2px;}
       /* Sidebar analysis stepper */
@@ -275,6 +298,42 @@ def render_attribution(attribution: list[dict]) -> None:
     st.markdown("".join(cells), unsafe_allow_html=True)
 
 
+def _verdict_class(verdict: str) -> str:
+    v = str(verdict)
+    if any(k in v for k in ("위험", "부정", "악화", "경고")):
+        return "fs-b-high"
+    if any(k in v for k in ("주의", "경계", "혼조")):
+        return "fs-b-med"
+    if any(k in v for k in ("긍정", "양호", "개선")):
+        return "fs-b-low"
+    return "fs-b-pending"
+
+
+def render_tracker_cards(cards: list[dict]) -> None:
+    """This-quarter commentary as clean structured cards (변화 → 해석 → 대응 → 다음 확인)."""
+    html = ['<div class="fs-tc-grid">']
+    for c in cards:
+        verdict = c.get("verdict", "검토")
+        evidence = [e for e in (c.get("evidence") or []) if e]
+        ev_block = ""
+        if evidence:
+            items = "".join(f"<li>{_esc(e)}</li>" for e in evidence[:4])
+            ev_block = f'<details class="fs-tc-ev"><summary>근거 {len(evidence)}건</summary><ul>{items}</ul></details>'
+        html.append(
+            '<div class="fs-tc">'
+            f'<div class="fs-tc-top"><span class="fs-tc-title">{_esc(c.get("title"))}</span>'
+            f'<span class="fs-badge {_verdict_class(verdict)}">{_esc(verdict)}</span></div>'
+            f'<div class="fs-tc-meta">신뢰도 {_esc(c.get("confidence", "Medium"))} · 모델 연결 {_esc(c.get("model_link", "DCF"))}</div>'
+            f'<div class="fs-tc-read">{_esc(c.get("read"))}</div>'
+            f'<div class="fs-tc-kv"><span class="k">해석</span><span class="v">{_esc(c.get("so_what"))}</span></div>'
+            f'<div class="fs-tc-kv"><span class="k">대응</span><span class="v">{_esc(c.get("action") or c.get("so_what"))}</span></div>'
+            f'<div class="fs-tc-kv"><span class="k">다음 확인</span><span class="v">{_esc(c.get("next"))}</span></div>'
+            f'{ev_block}</div>'
+        )
+    html.append('</div>')
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+
 def render_interpretation(item: dict, fmt) -> None:
     """Render one abnormal signal's full causal reading (mechanism → sourced cause → falsifier)."""
     interp = item["interpretation"]
@@ -305,7 +364,11 @@ def render_interpretation(item: dict, fmt) -> None:
         blocks.append('<div class="fs-rail" style="color:#B45309;">키워드가 매칭된 공시·뉴스·리서치 근거가 없어 사업 원인을 확정하지 않습니다.</div>')
     blocks.append('</div>')
     st.markdown("".join(blocks), unsafe_allow_html=True)
-    st.markdown('<div class="fs-rail" style="font-weight:700;margin:10px 0 4px;">확인 절차 · 어디서 → 무엇을 → 판정</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="fs-rail" style="font-weight:700;margin:12px 0 4px;">직접 확인하는 방법 '
+        '<span style="font-weight:500;color:#94A3B8;">— 어디서 보고 · 무엇을 보고 · 어떻게 판단하나</span></div>',
+        unsafe_allow_html=True,
+    )
     recipe_html = ['<div class="fs-recipe">']
     for i, r in enumerate(interp.get("verification", []), 1):
         recipe_html.append(
@@ -313,20 +376,22 @@ def render_interpretation(item: dict, fmt) -> None:
             f'<div class="fs-recipe-body">'
             f'<div><span class="fs-recipe-tag">어디서</span>{_esc(r.get("where"))}</div>'
             f'<div><span class="fs-recipe-tag">무엇을</span>{_esc(r.get("what"))}</div>'
-            f'<div><span class="fs-recipe-tag fs-recipe-rule">판정</span>{_esc(r.get("rule"))}</div>'
+            f'<div><span class="fs-recipe-tag fs-recipe-rule">판단</span>{_esc(r.get("rule"))}</div>'
             f'</div></div>'
         )
     recipe_html.append("</div>")
     st.markdown("".join(recipe_html), unsafe_allow_html=True)
-    cols = st.columns([3, 2])
-    with cols[0]:
-        st.markdown("**DART 본표가 답한 부분 (작동 원리)**")
-        st.caption(interp.get("dart_answer") or "—")
-        for ev in item.get("dart_evidence", []):
-            st.caption(f"• {ev}")
-    with cols[1]:
-        st.markdown("**반증 조건**")
-        st.caption(f"⛔ {interp.get('falsifier','')}")
+    dart_evidence = "".join(f"<span class='ev'>• {_esc(ev)}</span>" for ev in item.get("dart_evidence", []))
+    falsifier = interp.get("falsifier", "")
+    st.markdown(
+        '<div class="fs-twin">'
+        '<div class="fs-twin-box"><div class="fs-twin-h">공시 숫자로 설명되는 부분</div>'
+        f'<div class="fs-twin-b">{_esc(interp.get("dart_answer") or "—")}{dart_evidence}</div></div>'
+        '<div class="fs-twin-box fs-twin-warn"><div class="fs-twin-h">이 해석을 다시 볼 신호</div>'
+        f'<div class="fs-twin-b">{_esc(falsifier) if falsifier else "—"}</div></div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_header(slim: bool = False) -> None:

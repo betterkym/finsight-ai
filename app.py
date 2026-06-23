@@ -30,7 +30,8 @@ from signal_engine import attach_context, attach_peer_evidence, build_margin_bri
 from ui_components import (
     financial_trend_chart, inject_css, peer_benchmark_chart, price_path_chart,
     render_attribution, render_checkpoints, render_context_items, render_header, render_interpretation,
-    render_landing, render_process_steps, render_quality, render_tab_intro, valuation_range_band,
+    render_landing, render_process_steps, render_quality, render_tab_intro,
+    render_tracker_cards, valuation_range_band,
 )
 from validation_agenda import build_data_quality_report, has_blocking_gaps
 from valuation_model import build_opm_path, build_structured_model
@@ -812,23 +813,8 @@ with tracker_tab:
     st.plotly_chart(financial_trend_chart(kpis), width="stretch", key="tracker_financial_trend_chart")
     if tracker_commentary:
         st.markdown("#### 이번 분기 변화 해석")
-        st.caption("숫자 변화 → 가능한 원인 → 투자자 액션 → DCF 가정 연결 순서로 읽도록 구성했습니다.")
-        cols = st.columns(min(2, len(tracker_commentary)))
-        for idx, card in enumerate(tracker_commentary):
-            with cols[idx % len(cols)]:
-                with st.container(border=True):
-                    st.markdown(f"**{card['title']}**")
-                    st.caption(f"판정: {card.get('verdict', '검토')} · 신뢰도: {card.get('confidence', 'Medium')} · 연결: {card.get('model_link', 'DCF')}")
-                    st.write(card["read"])
-                    evidence = card.get("evidence") or []
-                    if evidence:
-                        st.markdown("근거")
-                        for line in evidence[:4]:
-                            st.markdown(f"- {line}")
-                    st.markdown("**그래서 사용자는 무엇을 해야 하나**")
-                    st.write(card.get("action") or card["so_what"])
-                    st.caption(card["so_what"])
-                    st.markdown(f"다음 확인: {card['next']}")
+        st.caption("숫자 변화 → 해석 → 대응 → 다음 확인 순서로 읽도록 구성했습니다.")
+        render_tracker_cards(tracker_commentary)
     st.dataframe(_tracker_style(build_tracker_table(kpis)), width="stretch", height=460)
     driver_rows = (context.get("external_drivers") or {}).get("status_rows", [])
     if driver_rows:

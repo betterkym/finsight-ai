@@ -703,7 +703,7 @@ def generate_analysis_html_report(
         for item in m["interpreted"]:
             I = item.get("interpretation", {})
             top = (I.get("cause_candidates") or [{}])[0]
-            cause = f"[{top.get('evidence_level','')}] {top.get('cause','')}" if top.get("cause") else "근거 대기"
+            cause = f"[{top.get('evidence_level','')}] {top.get('cause','')}" if top.get("cause") else "외부 근거 미확인"
             rows.append([I.get("headline", item.get("label", "")), I.get("confidence", ""), cause])
         interpreted_items = _html_table(["이상신호", "신뢰도", "원인 후보"], rows)
     w = m.get("wacc") or {}
