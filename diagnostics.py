@@ -144,16 +144,16 @@ def calculate_multiple_valuation(
     per_band = valuation_reference.get("per_band") or [10.0, 12.0, 14.0]
     for multiple in per_band:
         price = eps * float(multiple)
-        rows.append({"method": "PER", "case": f"{multiple:.1f}x", "multiple": float(multiple), "implied_price": price, "upside": (price / current_price - 1) * 100 if current_price else None, "basis": "LTM EPS × target PER"})
+        rows.append({"method": "PER", "case": f"{multiple:.1f}x", "multiple": float(multiple), "implied_price": price, "upside": (price / current_price - 1) * 100 if current_price else None, "basis": "LTM EPS × 목표 PER"})
     ev_band = valuation_reference.get("ev_ebitda_band") or [4.0, 5.0, 6.0]
     for multiple in ev_band:
         enterprise_value = ebitda * float(multiple)
         equity_value = enterprise_value - net_debt
         price = equity_value / shares_outstanding
-        rows.append({"method": "EV/EBITDA", "case": f"{multiple:.1f}x", "multiple": float(multiple), "implied_price": price, "upside": (price / current_price - 1) * 100 if current_price else None, "basis": "LTM EBITDA × target multiple - net debt"})
+        rows.append({"method": "EV/EBITDA", "case": f"{multiple:.1f}x", "multiple": float(multiple), "implied_price": price, "upside": (price / current_price - 1) * 100 if current_price else None, "basis": "LTM EBITDA × 목표배수 − 순차입금"})
     for target in valuation_reference.get("broker_targets", []):
         price = float(target["target_price"])
-        rows.append({"method": "Broker reference", "case": target["source"], "multiple": None, "implied_price": price, "upside": (price / current_price - 1) * 100 if current_price else None, "basis": "User-provided research PDF; cross-check only"})
+        rows.append({"method": "Broker reference", "case": target["source"], "multiple": None, "implied_price": price, "upside": (price / current_price - 1) * 100 if current_price else None, "basis": "리서치 참고값 · 교차검증용"})
     return pd.DataFrame(rows)
 
 

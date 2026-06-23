@@ -70,9 +70,16 @@ def build_revenue_decomposition(
     growths = [row["company_growth"] for row in history if row["company_growth"] is not None]
     industry_vals = [row["industry_growth"] for row in history if row["industry_growth"] is not None]
     share_vals = [row["share_growth"] for row in history if row["share_growth"] is not None]
-    industry_avg = float(np.mean(industry_vals)) if industry_vals else None
-    share_avg = float(np.mean(share_vals)) if share_vals else None
-    recent = float(np.mean(growths[-3:])) if growths else 3.0
+    # The user's Nongshim revenue workbook weights recent history 10/20/30/40,
+    # instead of treating stale years the same as the latest year. Preserve that
+    # practical logic where enough observations exist; fall back to a simple
+    # average when the public quarterly history is too short.
+    weighted_company = _weighted_recent(growths)
+    weighted_industry = _weighted_recent(industry_vals)
+    weighted_share = _weighted_recent(share_vals)
+    industry_avg = weighted_industry if weighted_industry is not None else (float(np.mean(industry_vals)) if industry_vals else None)
+    share_avg = weighted_share if weighted_share is not None else (float(np.mean(share_vals)) if share_vals else None)
+    recent = weighted_company if weighted_company is not None else (float(np.mean(growths[-3:])) if growths else 3.0)
     # When peer history is too thin to split industry vs share, seed the forward build
     # with the company's own recent growth (industry≈company, share≈0) so the model
     # stays usable; the split columns above still show where data was missing.
@@ -84,10 +91,23 @@ def build_revenue_decomposition(
         "share_growth_avg": round(share_seed, 2),
         "industry_observed": industry_avg is not None,
         "recent_company_growth": round(recent, 2),
+        "weighted_company_growth": round(weighted_company, 2) if weighted_company is not None else None,
+        "weighted_industry_growth": round(weighted_industry, 2) if weighted_industry is not None else None,
+        "weighted_share_growth": round(weighted_share, 2) if weighted_share is not None else None,
         "cpi": cpi,
-        "method": "기업성장률 ≈ 산업성장률(동종기업 합산 proxy) + 점유율 변화율 / 인플레이션 교차검증",
+        "method": "기업성장률 ≈ 산업성장률(동종기업 합산 proxy) + 점유율 변화율 / 최근연도 10·20·30·40 가중평균 / 인플레이션 교차검증",
         "drivers": [d for d in research.get("drivers", []) if d.get("theme") in {"국내", "미주", "유럽", "중국", "수출", "점유율"}],
     }
+
+
+def _weighted_recent(values: list[float | None]) -> float | None:
+    clean = [float(v) for v in values if v is not None and math.isfinite(float(v))]
+    if len(clean) < 2:
+        return clean[-1] if clean else None
+    sample = clean[-4:]
+    weights = [0.1, 0.2, 0.3, 0.4][-len(sample):]
+    total = sum(weights)
+    return round(sum(v * w for v, w in zip(sample, weights)) / total, 2)
 
 
 def _annual_revenue(kpis: pd.DataFrame) -> list[tuple[int, float, float | None]]:

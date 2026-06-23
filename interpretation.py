@@ -184,11 +184,11 @@ def interpret_signal(item: dict, context_pool: list[dict], research: dict, marke
     if candidates:
         top = candidates[0]
         bridge = f"{top['source']}({top['evidence_level']})는 이 움직임을 「{top['cause']}」와 연결합니다. "
-        residual = "보도·리서치 단계의 정황이므로, 아래 레시피대로 다음 분기 세부 자료에서 직접 확인하면 확정됩니다."
+        residual = "보도·리서치 단계의 정황이므로, 아래 절차대로 다음 분기 세부 자료에서 직접 확인하면 확정됩니다."
         confidence = "High" if top.get("tier", 3) <= 1 else ("Medium" if top.get("tier", 3) == 2 else "Low")
     else:
         bridge = "매칭된 공시·뉴스·리서치 근거가 아직 없어 원인을 단정하지 않습니다. "
-        residual = "대신 아래 검증 레시피로 어디를 어떻게 봐야 하는지 짚었습니다."
+        residual = "대신 아래 확인 절차로 어디를 어떻게 봐야 하는지 짚었습니다."
         confidence = "Evidence pending"
 
     narrative = (move + mechanism + " " + bridge + residual).strip()
@@ -237,7 +237,7 @@ _VERIFY = {
     "opm": [
         {"where": "본 워크북 02 Earnings Bridge(원가율·판관비율 기여 분해)",
          "what": "OPM 변화를 원가율 기여와 판관비율 기여로 분해해 어느 축이 주도했는지 확인",
-         "rule": "원가율 주도면 cogs_ratio 레시피로, 판관비 주도면 sga_ratio 레시피로 한 단계 더 내려가 원인 추적"},
+         "rule": "원가율 주도면 cogs_ratio 절차로, 판관비 주도면 sga_ratio 절차로 한 단계 더 내려가 원인 추적"},
         {"where": "IR 지역별 영업이익률(국내/미주/중국/일본/유럽)",
          "what": "해외 이익률 개선이 판가 인상 효과인지 물량 증가에 따른 고정비 분산인지 구분",
          "rule": "물량 동반 없이 판가만으로 개선됐으면 → 다음 분기 지속성 의심"},
@@ -253,7 +253,7 @@ _VERIFY = {
     "fcf_margin": [
         {"where": "DART 현금흐름표 투자활동 + 「유형자산」 주석 + 신규 시설투자 공시",
          "what": "CAPEX/매출을 과거 3년 평균과 비교하고, 증설 공시의 투자금액·완공예정일·자기자본 대비 비율을 확인",
-         "rule": "증설 사이클 진입이면 → 준공·가동 전까지 FCF 압박은 정상(회수 시점이 관건). 증설 없이 FCF 악화면 → 운전자본 문제(cfo_margin 레시피로)"},
+         "rule": "증설 사이클 진입이면 → 준공·가동 전까지 FCF 압박은 정상(회수 시점이 관건). 증설 없이 FCF 악화면 → 운전자본 문제(cfo_margin 절차로)"},
     ],
     "cfo_margin": [
         {"where": "DART 현금흐름표 「영업활동」 운전자본 증감 + 매출채권·재고 주석",
@@ -288,7 +288,7 @@ _VERIFY = {
     "current_ratio": [
         {"where": "DART 재무상태표 유동자산·유동부채 구성",
          "what": "유동비율 하락이 현금 감소 때문인지 단기차입·매입채무 증가 때문인지 분해",
-         "rule": "재고·매출채권은 늘었는데 현금이 줄었으면 → 운전자본에 현금이 묶인 것(cfo_margin 레시피로)"},
+         "rule": "재고·매출채권은 늘었는데 현금이 줄었으면 → 운전자본에 현금이 묶인 것(cfo_margin 절차로)"},
     ],
 }
 

@@ -18,11 +18,12 @@
 
 | 탭 | 실무 목적 |
 |---|---|
-| `01 실적 트래커` | 분기 원본, QoQ/YoY, 매출·OPM·CFO 추세와 결측 확인 |
-| `02 이상 탐지·원인` | 13개 지표 전수 판정과 DART 내부 원인·근거 확인 |
-| `03 동종기업 검증` | 자동 추천 peer set의 최신 중앙값과 상대 격차 확인 |
-| `04 DCF 가정·가치` | 증거 조정 가정, 자동 자본구조, 예비 가치와 민감도 확인 |
-| `05 Excel·근거` | 재현 가능한 Analyst Workbook과 Markdown 요약 다운로드 |
+| `01 투자판단` | 실적·기대치·수급·촉매를 분리하고 다음 분기 확인 항목의 “확인되면/안 되면/모델 액션”까지 제시 |
+| `02 실적 트래커` | 분기 원본, QoQ/YoY, 매출·OPM·CFO 추세, 최신 분기 변화 해석과 결측 확인 |
+| `03 이상 탐지·원인` | 13개 지표 전수 판정과 DART 내부 원인·근거·검증 레시피 확인 |
+| `04 동종기업 검증` | 자동 추천 peer set의 최신 중앙값과 상대 격차 확인 |
+| `05 가치평가` | 바텀업 매출·판관비·WACC 빌드, DCF·PER·EV/EBITDA 교차검증, 베타 guardrail |
+| `06 Excel·근거` | 재현 가능한 Analyst Workbook과 Markdown 요약 다운로드 |
 
 ## 자동 수집 범위
 
@@ -31,7 +32,8 @@
 - 운전자본: 매출채권, 재고, 매입채무, 회전일수
 - 재무상태: 유동자산·부채, 총자산·부채·자본, 부채비율
 - 자본구조: DART 발행주식수, 이자부채, 현금, 순차입금
-- 시장·거시: 최근 종가, 베타, 무위험수익률 등
+- 시장·거시: 최근 종가, 베타, 무위험수익률, KRX 수급, World Bank/FRED proxy 등
+- 확장 API 준비: KOSIS(국내 산업·소비), KAMIS(원재료 가격), Trading Economics(국가별 매크로), UN Comtrade/KATI(수출입·해외 물량 proxy)
 
 연결재무제표를 우선하며, 누적 flow는 개별 분기로 환산합니다. 계정 결측은 임의 보정하지 않고 `Needs Review`로 표시합니다.
 
@@ -48,8 +50,8 @@
 |---|---|
 | `00 Cover` | 핵심 판단, 사실/가설 분리, 방법별 가치 차트 |
 | `01 Quarterly` | 분기 원본·파생 KPI·QoQ/YoY |
-| `02 Earnings Bridge` | 마진 변동 분해와 컨센서스 기대 괴리 |
-| `03 Thesis Evidence` | 가설 트리, 반증 조건, 신뢰도순 외부 맥락 |
+| `02 Earnings Bridge` | 마진 변동 분해, 컨센서스 기대 괴리, 최신 분기 so-what 해석 |
+| `03 Thesis Evidence` | 가설 트리, 확인되면/안 되면/모델 액션, 신뢰도순 외부 맥락 요약 |
 | `04 Peers Multiples` | 동종기업 벤치마크와 멀티플 교차검증 |
 | `05 DCF` | 수정 가능한 가정과 5개년 FCFF·WACC·영구가치 수식 |
 | `06 Scenarios` | Bear/Base/Bull 수식 재계산 |
@@ -78,21 +80,30 @@ DART_API_KEY=발급키
 ECOS_API_KEY=발급키
 NAVER_CLIENT_ID=발급값
 NAVER_CLIENT_SECRET=발급값
+KRX_ID=KRX계정
+KRX_PW=KRX비밀번호
+KOSIS_API_KEY=발급키
+KOSIS_FOOD_TABLE_ID=식품/소비 통계표ID
+KAMIS_API_ID=발급ID
+KAMIS_API_KEY=발급키
+FRED_API_KEY=발급키
+TRADING_ECONOMICS_KEY=발급키
+UN_COMTRADE_KEY=발급키
 ```
 
-DART 키는 필수입니다. ECOS·뉴스 키가 없거나 연결되지 않으면 가능한 분석은 계속하고, 누락된 맥락은 화면에 명시합니다.
+DART 키는 필수입니다. ECOS·뉴스·외부 데이터 키가 없거나 연결되지 않으면 가능한 분석은 계속하고, 누락된 맥락은 화면과 Excel `07 Checks Sources`에 명시합니다. KOSIS/KAMIS/UN Comtrade는 키 외에도 통계표·품목·HS코드 매핑이 있어야 실무 가정 근거로 승격됩니다.
 
 ## 주요 파일
 
 | 파일 | 역할 |
 |---|---|
-| `app.py` | 다섯 탭 분석 워크플로우 |
+| `app.py` | 여섯 탭 분석 워크플로우 |
 | `data_collector.py` | DART·시장·거시·뉴스 수집과 peer 추천 |
 | `kpi_engine.py` | 분기 KPI와 증감률 계산 |
 | `signal_engine.py` | 전수 이상 탐지, 내부 원인, peer·맥락 연결 |
 | `business_focus.py` | 이상 신호를 DCF 가정으로 변환 |
-| `diagnostics.py` | DCF와 민감도 계산 |
-| `excel_builder.mjs` | 수식 기반 6시트 Analyst Workbook 생성 |
+| `diagnostics.py` | driver-based DCF, 멀티플 교차검증, 민감도 계산 |
+| `excel_builder.mjs` | 수식 기반 12시트 Analyst Workbook 생성 |
 | `report_generator.py` | Streamlit 다운로드용 Excel 브리지 |
 
 ## 한계

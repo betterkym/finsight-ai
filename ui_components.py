@@ -78,6 +78,47 @@ def inject_css() -> None:
       .fs-recipe-body {padding:9px 14px;font-size:.86rem;color:#344054;line-height:1.5;display:flex;flex-direction:column;gap:3px;}
       .fs-recipe-tag {display:inline-block;min-width:46px;font-size:.66rem;font-weight:800;color:#475569;background:#EEF2F6;border-radius:3px;padding:1px 6px;margin-right:8px;text-align:center;letter-spacing:.02em;}
       .fs-recipe-rule {color:#9A3412;background:#FFF7ED;}
+      .finsight-context-item {background:#FFFFFF;border:1px solid #E2E8F0;border-radius:8px;padding:11px 14px;margin:8px 0;}
+      .finsight-context-item a {font-weight:700;color:#143257;text-decoration:none;}
+      .finsight-context-item span {display:block;color:#64748B;font-size:.76rem;margin-top:2px;}
+      .finsight-context-item p {color:#111827;font-size:.9rem;line-height:1.5;margin:7px 0 0 0;}
+      /* Slim top bar (analysis pages + landing option A) */
+      .fs-bar {display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #D7DEE7;padding:2px 0 12px;margin-bottom:20px;gap:20px;}
+      .fs-bar-brand {font-size:1.5rem;font-weight:800;letter-spacing:-.045em;color:#0B1F33;line-height:1;}
+      .fs-bar-brand span {color:#1D4E89;}
+      /* Landing hero */
+      .fs-hero {margin:10px 0 4px;}
+      .fs-hero-lead {font-size:1.92rem;line-height:1.26;font-weight:800;letter-spacing:-.035em;color:#0B1F33;max-width:900px;}
+      .fs-hero-lead em {font-style:normal;color:#1D4E89;}
+      .fs-hero-sub {margin-top:14px;font-size:1.0rem;line-height:1.62;color:#475467;max-width:780px;}
+      .fs-cap {font-size:.66rem;letter-spacing:.16em;text-transform:uppercase;color:#94A3B8;font-weight:800;margin:30px 0 10px;}
+      .fs-feature-grid {display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
+      .fs-feature {background:#FFFFFF;border:1px solid #E2E8F0;border-top:3px solid #1D4E89;border-radius:9px;padding:18px 18px 20px;box-shadow:0 1px 3px rgba(16,24,40,.05);transition:transform .16s ease,box-shadow .16s ease;}
+      .fs-feature:hover {transform:translateY(-3px);box-shadow:0 10px 24px rgba(16,24,40,.10);}
+      .fs-feature-k {font-size:.68rem;font-weight:800;letter-spacing:.14em;color:#1D4E89;}
+      .fs-feature-t {font-size:1.05rem;font-weight:800;color:#143257;margin:9px 0 7px;letter-spacing:-.01em;}
+      .fs-feature-d {font-size:.86rem;line-height:1.56;color:#475467;}
+      .fs-usecases {display:grid;grid-template-columns:repeat(3,1fr);border:1px solid #E2E8F0;border-radius:9px;overflow:hidden;background:#FFFFFF;}
+      .fs-usecase {padding:16px 18px;border-right:1px solid #EEF2F6;}
+      .fs-usecase:last-child {border-right:none;}
+      .fs-usecase-h {font-size:.82rem;font-weight:800;color:#1D4E89;letter-spacing:-.01em;}
+      .fs-usecase-d {font-size:.86rem;color:#475467;line-height:1.52;margin-top:5px;}
+      .fs-cta {display:flex;align-items:center;gap:14px;margin-top:22px;padding:16px 20px;background:linear-gradient(90deg,#0F2238,#173B57);border-radius:9px;color:#DCEAF7;font-size:.96rem;line-height:1.5;}
+      .fs-cta b {color:#FFFFFF;}
+      .fs-cta-arrow {font-size:1.35rem;color:#7FB0E6;flex:none;}
+      .fs-cta-ex {color:#9DBBDB;font-size:.84rem;}
+      @media (max-width:1100px){.fs-feature-grid{grid-template-columns:repeat(2,1fr)}.fs-usecases{grid-template-columns:1fr}.fs-usecase{border-right:none;border-bottom:1px solid #EEF2F6}.fs-hero-lead{font-size:1.6rem}}
+      /* Sidebar rail label (brand lives in the top bar, not repeated here) */
+      [data-testid="stSidebar"] .fs-side-cap {font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;color:#7E9ABA;font-weight:800;padding:2px 0 2px;}
+      /* Sidebar analysis stepper */
+      [data-testid="stSidebar"] .fs-steps-cap {font-size:.64rem;letter-spacing:.14em;text-transform:uppercase;color:#7E9ABA;font-weight:800;margin:2px 0 12px;}
+      [data-testid="stSidebar"] .fs-step {display:flex;gap:11px;align-items:flex-start;padding:0 0 13px;position:relative;}
+      [data-testid="stSidebar"] .fs-step:last-child {padding-bottom:0;}
+      [data-testid="stSidebar"] .fs-step::before {content:"";position:absolute;left:9.5px;top:21px;bottom:-1px;width:1px;background:#244668;}
+      [data-testid="stSidebar"] .fs-step:last-child::before {display:none;}
+      [data-testid="stSidebar"] .fs-step-n {flex:none;width:20px;height:20px;border-radius:50%;background:#13335A;border:1px solid #2C5688;color:#9FC4ED;font-size:.7rem;font-weight:800;display:flex;align-items:center;justify-content:center;z-index:1;}
+      [data-testid="stSidebar"] .fs-step-t {font-size:.82rem;color:#CAD8E8;line-height:1.4;padding-top:1px;}
+      [data-testid="stSidebar"] .fs-principle {margin-top:14px;font-size:.73rem;color:#8AA3BE;line-height:1.5;border-left:2px solid #2C5688;padding-left:10px;}
       h1,h2,h3,h4 {letter-spacing:-.02em;}
       .stDataFrame {border:1px solid #E2E8F0;border-radius:6px;}
       footer {visibility:hidden;} #MainMenu {visibility:hidden;}
@@ -98,7 +139,7 @@ def _esc(text) -> str:
 def render_attribution(attribution: list[dict]) -> None:
     """Render the price-action driver decomposition as an analyst attribution grid."""
     if not attribution:
-        st.info("기여 분해에 사용할 실적·수급·기대치 데이터가 부족합니다.")
+        st.info("변동요인 분해에 사용할 실적·수급·기대치 데이터가 부족합니다.")
         return
     cells = ['<div class="fs-attr">']
     for row in attribution:
@@ -146,7 +187,7 @@ def render_interpretation(item: dict, fmt) -> None:
         blocks.append('<div class="fs-rail" style="color:#B45309;">키워드가 매칭된 공시·뉴스·리서치 근거가 없어 사업 원인을 확정하지 않습니다.</div>')
     blocks.append('</div>')
     st.markdown("".join(blocks), unsafe_allow_html=True)
-    st.markdown('<div class="fs-rail" style="font-weight:700;margin:10px 0 4px;">검증 레시피 · 어디서 → 무엇을 → 판정</div>', unsafe_allow_html=True)
+    st.markdown('<div class="fs-rail" style="font-weight:700;margin:10px 0 4px;">확인 절차 · 어디서 → 무엇을 → 판정</div>', unsafe_allow_html=True)
     recipe_html = ['<div class="fs-recipe">']
     for i, r in enumerate(interp.get("verification", []), 1):
         recipe_html.append(
@@ -161,7 +202,7 @@ def render_interpretation(item: dict, fmt) -> None:
     st.markdown("".join(recipe_html), unsafe_allow_html=True)
     cols = st.columns([3, 2])
     with cols[0]:
-        st.markdown("**DART 본표가 답한 부분 (메커니즘)**")
+        st.markdown("**DART 본표가 답한 부분 (작동 원리)**")
         st.caption(interp.get("dart_answer") or "—")
         for ev in item.get("dart_evidence", []):
             st.caption(f"• {ev}")
@@ -170,12 +211,94 @@ def render_interpretation(item: dict, fmt) -> None:
         st.caption(f"⛔ {interp.get('falsifier','')}")
 
 
-def render_header() -> None:
+def render_header(slim: bool = False) -> None:
+    if slim:
+        st.markdown(
+            '<div class="fs-bar"><div class="fs-bar-brand">Fin<span>Sight</span></div>'
+            '<div class="fs-product-tag">ANALYST WORKBENCH</div></div>',
+            unsafe_allow_html=True,
+        )
+        return
     st.markdown(
         '<div class="fs-masthead"><div><div class="fs-kicker">FILING-LED EQUITY RESEARCH</div>'
-        '<div class="fs-brand">Fin<span>Sight</span></div><div class="fs-subtitle">공시 숫자를 끝점으로 보지 않습니다. '
-        '기대치 괴리·수급·경쟁·투자 시점을 검증하고, 그 판단을 바텀업 가치평가 수식으로 연결합니다.</div>'
+        '<div class="fs-brand">Fin<span>Sight</span></div><div class="fs-subtitle">'
+        '실적 변화의 원인을 추적하고 밸류에이션까지 잇는 공시 기반 리서치 워크벤치.</div>'
         '</div><div class="fs-product-tag">ANALYST WORKBENCH</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+_LANDING_FEATURES = [
+    ("이상 탐지", "전 계정을 자체 과거 범위와 비교해, 통계적으로 벗어난 항목만 가려냅니다."),
+    ("원인 추적", "DART 주석·공시·뉴스에서 변화의 원인을 근거 강도순으로, 확인 절차까지 함께 제시합니다."),
+    ("동종기업 검증", "같은 신호가 회사만의 문제인지 업종 공통 현상인지 자동 추천된 비교군으로 가립니다."),
+    ("가치평가 연결", "판관비 bottom-up OPM·동종기업 베타로 DCF·PER·EV/EBITDA를 교차검증합니다."),
+]
+
+_LANDING_USECASES = [
+    ("어닝 쇼크 직후", "꺾인 마진이 원가율 탓인지 판관비 탓인지 한 번에 분해합니다."),
+    ("주가가 실적과 따로 놀 때", "수익률을 펀더멘털·기대치·수급·촉매 기여로 나눠 읽습니다."),
+    ("목표가 점검", "단일 숫자 대신 DCF·멀티플 방법별 밴드로 교차검증합니다."),
+]
+
+
+_PROCESS_STEPS = [
+    "과거·기대치 대비 실적 점검",
+    "DART 공시 계정으로 원인 분해",
+    "동종기업과 교차 검증",
+    "수급·공시·시장 정황 확인",
+    "검증 가능한 투자 논점 도출",
+    "DCF·멀티플로 가치 교차검증",
+]
+
+
+def render_process_steps() -> None:
+    """Sidebar analysis pipeline shown as a connected stepper, not a bare list."""
+    steps = "".join(
+        f'<div class="fs-step"><div class="fs-step-n">{i}</div>'
+        f'<div class="fs-step-t">{_esc(text)}</div></div>'
+        for i, text in enumerate(_PROCESS_STEPS, 1)
+    )
+    st.markdown(
+        '<div class="fs-steps-cap">분석 프로세스</div>'
+        f'<div class="fs-steps">{steps}</div>'
+        '<div class="fs-principle">근거가 부족하면 원인을 단정하지 않고, '
+        '무엇을 어떻게 확인할지 절차로 안내합니다.</div>',
+        unsafe_allow_html=True,
+    )
+
+
+_HERO_LEAD = '숫자의 변화에서 <em>Why</em>를 찾고, <em>Valuation</em>까지 잇습니다.'
+_HERO_SUB = ('DART 재무·공시, 시세·수급, 동종기업을 한자리에서 교차검증합니다. '
+             '이상 신호를 자동으로 짚어 원인을 근거 강도순으로 제시하고, bottom-up DCF 가정으로 연결합니다.')
+
+
+def render_landing(examples: list[str] | None = None) -> None:
+    """Pre-analysis cover: value proposition, capability grid, use-cases, start cue."""
+    features = "".join(
+        f'<div class="fs-feature"><div class="fs-feature-k">{i:02d}</div>'
+        f'<div class="fs-feature-t">{_esc(title)}</div>'
+        f'<div class="fs-feature-d">{_esc(desc)}</div></div>'
+        for i, (title, desc) in enumerate(_LANDING_FEATURES, 1)
+    )
+    usecases = "".join(
+        f'<div class="fs-usecase"><div class="fs-usecase-h">{_esc(head)}</div>'
+        f'<div class="fs-usecase-d">{_esc(desc)}</div></div>'
+        for head, desc in _LANDING_USECASES
+    )
+    example_text = ""
+    if examples:
+        example_text = f'<div class="fs-cta-ex">예: {_esc(" · ".join(examples[:3]))}</div>'
+    hero = f'<div class="fs-hero"><div class="fs-hero-lead">{_HERO_LEAD}</div><div class="fs-hero-sub">{_HERO_SUB}</div></div>'
+    st.markdown(
+        hero
+        + '<div class="fs-cap">핵심 기능</div>'
+        + f'<div class="fs-feature-grid">{features}</div>'
+        + '<div class="fs-cap">이럴 때 써보세요</div>'
+        + f'<div class="fs-usecases">{usecases}</div>'
+        + '<div class="fs-cta"><span class="fs-cta-arrow">←</span>'
+        + f'<div>왼쪽 사이드바에서 기업명을 입력하고 <b>분석 실행</b>을 누르면 시작됩니다.{example_text}</div>'
+        + '</div>',
         unsafe_allow_html=True,
     )
 

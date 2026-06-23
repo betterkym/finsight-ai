@@ -69,7 +69,7 @@ cover.getRange(`A15:D${14 + Math.max(factRows.length,1)}`).values = factRows.len
 
 section(cover, "A22:G22", "Why Price Can Diverge From Earnings");
 cover.getRange("A23:E23").values = [["Priority", "Hypothesis", "Interpretation", "Evidence", "Falsifier / Next proof"]]; header(cover, "A23:E23");
-const hypothesisRows = (thesis.hypotheses || []).map((x,i) => [i+1, `${x.title} (${x.confidence})`, x.explanation, (x.evidence||[]).join(" | "), x.falsifier]);
+const hypothesisRows = (thesis.hypotheses || []).map((x,i) => [i+1, `${x.title} (${x.confidence})`, `${x.explanation || ""}${x.so_what ? "\nSo what: " + x.so_what : ""}`, (x.evidence||[]).join(" | "), x.falsifier]);
 cover.getRange(`A24:E${23 + Math.max(hypothesisRows.length,1)}`).values = hypothesisRows.length ? hypothesisRows : [[null,"No material non-financial hypothesis",null,null,null]]; tableBody(cover, `A24:E${23 + Math.max(hypothesisRows.length,1)}`);
 
 cover.getRange("J9:L9").values = [["Method", "Implied Price", "Current Price"]]; header(cover, "J9:L9");
@@ -105,22 +105,41 @@ section(earnings,"A18:L18","Expectation Gap References");
 earnings.getRange("A19:G19").values=[["Date","Metric","Actual Surprise","Fact","Source","Evidence Level","Use in Decision"]]; header(earnings,"A19:G19");
 const expectationRows=(data.researchReference?.expectations||[]).map(x=>[x.date,x.metric,pct(x.value),x.fact,x.source,x.evidence_level,"Beat + weak price = sustainability/flow review"]);
 earnings.getRange(`A20:G${19+Math.max(expectationRows.length,1)}`).values=expectationRows.length?expectationRows:[[null,"No consensus reference",null,null,null,null,"Upload/normalize research estimate"]]; tableBody(earnings,`A20:G${19+Math.max(expectationRows.length,1)}`); earnings.getRange(`C20:C${19+Math.max(expectationRows.length,1)}`).format.numberFormat=pctFmt;
-earnings.freezePanes.freezeRows(5); widths(earnings,{A:13,B:24,C:14,D:30,E:24,F:22,G:28,H:22,I:46,J:15,K:15,L:15});
+const commentaryStart=22+Math.max(expectationRows.length,1);
+section(earnings,`A${commentaryStart}:L${commentaryStart}`,"Latest Quarter Analyst Read — so what, not just what changed");
+earnings.getRange(`A${commentaryStart+1}:H${commentaryStart+1}`).values=[["Observation","Verdict","What changed","Evidence","So what","Investor action","Model link","Next proof point"]]; header(earnings,`A${commentaryStart+1}:H${commentaryStart+1}`);
+const trackerRows=(data.trackerCommentary||[]).map(x=>[
+  x.title,
+  `${x.verdict||"Review"} / ${x.confidence||"Medium"}`,
+  x.read,
+  (x.evidence||[]).join("\n"),
+  x.so_what,
+  x.action||x.so_what,
+  x.model_link||"DCF",
+  x.next
+]);
+earnings.getRange(`A${commentaryStart+2}:H${commentaryStart+1+Math.max(trackerRows.length,1)}`).values=trackerRows.length?trackerRows:[["No unusual latest-quarter combination","Neutral","Latest quarter moved broadly within expected bands","No material abnormal bridge","Keep base assumptions until a stronger pattern appears","Hold base case; review sensitivity","Base case","Review next DART filing"]];
+tableBody(earnings,`A${commentaryStart+2}:H${commentaryStart+1+Math.max(trackerRows.length,1)}`);
+earnings.freezePanes.freezeRows(5); widths(earnings,{A:24,B:16,C:44,D:42,E:42,F:42,G:24,H:42,I:18,J:15,K:15,L:15});
 
 // 03 Thesis Evidence
 const evidence = wb.worksheets.add("03 Thesis Evidence");
 title(evidence, `${data.company} | Thesis, Evidence and Falsifiers`, "Facts are separated from hypotheses; blogs are never treated as primary evidence", "K");
 section(evidence,"A4:K4","Investment Thesis Tree");
 evidence.getRange("A5:G5").values=[["Priority","Hypothesis","Confidence","Interpretation","Evidence","Falsifier","Linked URL"]]; header(evidence,"A5:G5");
-const hRows=(thesis.hypotheses||[]).map((x,i)=>[i+1,x.title,x.confidence,x.explanation,(x.evidence||[]).join(" | "),x.falsifier,x.url||null]);
+const hRows=(thesis.hypotheses||[]).map((x,i)=>[i+1,x.title,x.confidence,`${x.explanation || ""}${x.so_what ? "\nSo what: " + x.so_what : ""}`,(x.evidence||[]).join(" | "),x.falsifier,x.url||null]);
 evidence.getRange(`A6:G${5+Math.max(hRows.length,1)}`).values=hRows.length?hRows:[[null,"No hypothesis",null,null,null,null,null]]; tableBody(evidence,`A6:G${5+Math.max(hRows.length,1)}`);
-section(evidence,"A16:K16","Next-quarter Checkpoints"); evidence.getRange("A17:C17").values=[["Priority","Checkpoint","Decision if confirmed"]]; header(evidence,"A17:C17");
-const checkpointRows=(thesis.checkpoints||[]).map((x,i)=>[i+1,x,"Update forecast driver or remove hypothesis"]);
-evidence.getRange(`A18:C${17+Math.max(checkpointRows.length,1)}`).values=checkpointRows.length?checkpointRows:[[null,"No checkpoint",null]]; tableBody(evidence,`A18:C${17+Math.max(checkpointRows.length,1)}`);
-section(evidence,"A28:K28","External Context - Ranked by Reliability"); evidence.getRange("A29:G29").values=[["Date","Title","Source","Evidence Level","Matched Keywords","URL","Analyst Use"]]; header(evidence,"A29:G29");
-const externalRows=(thesis.context||[]).map(x=>[x.date,x.title,x.source,x.evidence_level,(x.matched_keywords||[]).join(", "),x.url,x.source==="Naver Blog"?"Hypothesis discovery only":"Context corroboration"]);
-evidence.getRange(`A30:G${29+Math.max(externalRows.length,1)}`).values=externalRows.length?externalRows:[[null,"No matched context",null,null,null,null,null]]; tableBody(evidence,`A30:G${29+Math.max(externalRows.length,1)}`);
-evidence.freezePanes.freezeRows(5); widths(evidence,{A:10,B:30,C:28,D:55,E:36,F:55,G:46,H:12,I:12,J:12,K:12});
+section(evidence,"A16:K16","Next-quarter Checkpoints — decision rule");
+evidence.getRange("A17:F17").values=[["Priority","Checkpoint","If confirmed","If not confirmed","Model action","Linked valuation driver"]]; header(evidence,"A17:F17");
+const checkpointRows=(thesis.checkpoints||[]).map((x,i)=>typeof x==="string"
+  ? [i+1,x,"Update forecast driver if evidence improves","Keep conservative assumptions if not confirmed","Do not change valuation on a single weak signal","Assumption review"]
+  : [i+1,x.checkpoint,x.if_confirmed,x.if_not_confirmed,x.action,x.valuation_link]);
+evidence.getRange(`A18:F${17+Math.max(checkpointRows.length,1)}`).values=checkpointRows.length?checkpointRows:[[null,"No checkpoint",null,null,null,null]]; tableBody(evidence,`A18:F${17+Math.max(checkpointRows.length,1)}`);
+section(evidence,"A28:K28","External Context - Ranked by Reliability");
+evidence.getRange("A29:H29").values=[["Date","Title","Summary","Source","Evidence Level","Matched Keywords","URL","Analyst Use"]]; header(evidence,"A29:H29");
+const externalRows=(thesis.context||[]).map(x=>[x.date,x.title,x.summary||x.description,x.source,x.evidence_level,(x.matched_keywords||[]).join(", "),x.url,x.source==="Naver Blog"?"Hypothesis discovery only":"Context corroboration"]);
+evidence.getRange(`A30:H${29+Math.max(externalRows.length,1)}`).values=externalRows.length?externalRows:[[null,"No matched context",null,null,null,null,null,null]]; tableBody(evidence,`A30:H${29+Math.max(externalRows.length,1)}`);
+evidence.freezePanes.freezeRows(5); widths(evidence,{A:10,B:30,C:55,D:18,E:24,F:28,G:46,H:26,I:12,J:12,K:12});
 
 // 04 Peers & Multiples
 const peers = wb.worksheets.add("04 Peers Multiples");
@@ -168,15 +187,19 @@ for(let col=3;col<=7;col++){
   const L=String.fromCharCode(64+col),P=String.fromCharCode(63+col),step=col-3;
   dcf.getRange(`${L}27`).formulas=[[`=$B$6+($B$7-$B$6)*${step}/4`]];
   dcf.getRange(`${L}26`).formulas=[[`=${P}26*(1+${L}27)`]];
-  dcf.getRange(`${L}28`).formulas=[[`=$B$8+($B$9-$B$8)*${step}/4`]];
+  if (Array.isArray(assumptions.opm_path) && assumptions.opm_path.length >= 5 && assumptions.opm_path[step] !== null && assumptions.opm_path[step] !== undefined) {
+    dcf.getRange(`${L}28`).values=[[pct(assumptions.opm_path[step])]];
+  } else {
+    dcf.getRange(`${L}28`).formulas=[[`=$B$8+($B$9-$B$8)*${step}/4`]];
+  }
   dcf.getRange(`${L}29`).formulas=[[`=${L}26*${L}28`]]; dcf.getRange(`${L}30`).formulas=[[`=${L}29*$B$13`]]; dcf.getRange(`${L}31`).formulas=[[`=${L}29-${L}30`]];
   dcf.getRange(`${L}32`).formulas=[[`=${L}26*$B$10`]]; dcf.getRange(`${L}33`).formulas=[[`=${L}26*$B$11`]]; dcf.getRange(`${L}34`).formulas=[[`=${L}26*$B$12`]]; dcf.getRange(`${L}35`).formulas=[[`=${L}34-${P}34`]];
   dcf.getRange(`${L}36`).formulas=[[`=${L}31+${L}32-${L}33-${L}35`]]; dcf.getRange(`${L}37`).formulas=[[`=1/(1+$B$42)^${col-2}`]]; dcf.getRange(`${L}38`).formulas=[[`=${L}36*${L}37`]];
 }
-dcf.getRange("H26:H38").values=[["Prior revenue × (1+growth)"],["Linear fade: Year 1 to Year 5"],["Linear fade: Year 1 to Year 5"],["Revenue × EBIT margin"],["EBIT × tax"],["EBIT - cash tax"],["Revenue × D&A ratio"],["Revenue × CAPEX ratio"],["Revenue × NWC ratio"],["Ending NWC - prior NWC"],["NOPAT + D&A - CAPEX - ΔNWC"],["1/(1+WACC)^t"],["FCFF × discount factor"]];
+dcf.getRange("H26:H38").values=[["Prior revenue × (1+growth)"],["Linear fade: Year 1 to Year 5"],["Bottom-up SG&A OPM path when available; otherwise linear fade"],["Revenue × EBIT margin"],["EBIT × tax"],["EBIT - cash tax"],["Revenue × D&A ratio"],["Revenue × CAPEX ratio"],["Revenue × NWC ratio"],["Ending NWC - prior NWC"],["NOPAT + D&A - CAPEX - ΔNWC"],["1/(1+WACC)^t"],["FCFF × discount factor"]];
 for(const row of [27,28,37]) dcf.getRange(`B${row}:G${row}`).format.numberFormat=pctFmt; for(const row of [26,29,30,31,32,33,34,35,36,38]) dcf.getRange(`B${row}:G${row}`).format.numberFormat=amountFmt;
 section(dcf,"A40:D40","Valuation Output and Safety Checks"); dcf.getRange("A41:B52").values=[["Cost of Equity",null],["WACC",null],["PV Forecast FCFF",null],["Terminal Value",null],["PV Terminal Value",null],["Enterprise Value",null],["Equity Value",null],["Implied Price / Share",null],["TV / Enterprise Value",null],["WACC - g Spread",null],["Upside / (Downside)",null],["Model Status",null]];
-dcf.getRange("B41").formulas=[["=$B$14+$B$16*$B$15"]]; dcf.getRange("B42").formulas=[["=B41*(1-$B$17)+$B$18*(1-$B$13)*$B$17"]]; dcf.getRange("B43").formulas=[["=SUM(C38:G38)"]]; dcf.getRange("B44").formulas=[["=G36*(1+$B$19)/(B42-$B$19)"]]; dcf.getRange("B45").formulas=[["=B44*G37"]]; dcf.getRange("B46").formulas=[["=B43+B45"]]; dcf.getRange("B47").formulas=[["=B46-$B$21"]]; dcf.getRange("B48").formulas=[["=B47*100000000/$B$20"]]; dcf.getRange("B49").formulas=[["=B45/B46"]]; dcf.getRange("B50").formulas=[["=B42-$B$19"]]; dcf.getRange("B51").formulas=[["=B48/$B$22-1"]]; dcf.getRange("B52").formulas=[["=IF(AND(B50>=2%,B49<=80%,B20>0),\"PASS\",\"REVIEW\")"]];
+dcf.getRange("B41").formulas=[["=$B$14+$B$16*$B$15"]]; dcf.getRange("B42").formulas=[["=B41*(1-$B$17)+$B$18*(1-$B$13)*$B$17"]]; dcf.getRange("B43").formulas=[["=SUM(C38:G38)"]]; dcf.getRange("B44").formulas=[["=G36*(1+$B$19)/(B42-$B$19)"]]; dcf.getRange("B45").formulas=[["=B44*G37"]]; dcf.getRange("B46").formulas=[["=B43+B45"]]; dcf.getRange("B47").formulas=[["=B46-$B$21"]]; dcf.getRange("B48").formulas=[["=B47*100000000/$B$20"]]; dcf.getRange("B49").formulas=[["=B45/B46"]]; dcf.getRange("B50").formulas=[["=B42-$B$19"]]; dcf.getRange("B51").formulas=[["=B48/$B$22-1"]]; dcf.getRange("B52").formulas=[["=IF(AND(B50>=2%,B49<=75%,B20>0),\"PASS\",\"REVIEW\")"]];
 dcf.getRange("B41:B42").format.numberFormat=pctFmt; dcf.getRange("B43:B47").format.numberFormat=amountFmt; dcf.getRange("B48").format.numberFormat=countFmt; dcf.getRange("B49:B51").format.numberFormat=pctFmt; dcf.getRange("A46:B52").format.borders={top:{style:"thin",color:C.navy}}; dcf.getRange("B52").conditionalFormats.add("containsText",{text:"PASS",format:{fill:C.greenBg,font:{color:C.green,bold:true}}}); dcf.getRange("B52").conditionalFormats.add("containsText",{text:"REVIEW",format:{fill:C.amberBg,font:{color:C.amber,bold:true}}});
 dcf.freezePanes.freezeRows(5); widths(dcf,{A:28,B:18,C:48,D:18,E:14,F:14,G:14,H:34});
 
@@ -209,7 +232,7 @@ section(scenarios,"A11:H11","Interpretation"); scenarios.getRange("A12:D15").val
 const checks=wb.worksheets.add("07 Checks Sources");
 title(checks,`${data.company} | Checks, Sources and Version Log`,"PASS validates mechanics and source completeness - it does not certify an investment conclusion","J");
 section(checks,"A4:J4","Model Checks"); checks.getRange("A5:G5").values=[["Check","Actual","Expected","Difference","Tolerance","Status","Fix / Note"]]; header(checks,"A5:G5");
-checks.getRange("A6:G13").values=[["WACC-g spread",null,0.02,null,0,null,"Raise beta/WACC or lower terminal growth"],["TV/EV",null,0.80,null,0,null,"Review terminal assumptions"],["Shares populated",null,1,null,0,null,"Check DART share fallback"],["Revenue complete",data.quality.find(x=>x.field==="매출액")?.missing_quarters||0,0,null,0,null,"Check XBRL mapping"],["Operating profit complete",data.quality.find(x=>x.field==="영업이익")?.missing_quarters||0,0,null,0,null,"Check XBRL mapping"],["FCFF formula",null,null,null,0,null,"NOPAT + D&A - CAPEX - ΔNWC"],["Equity bridge",null,null,null,0,null,"EV - net debt"],["Overall model status",null,null,null,0,null,"All required checks"]];
+checks.getRange("A6:G13").values=[["WACC-g spread",null,0.02,null,0,null,"Raise beta/WACC or lower terminal growth"],["TV/EV",null,0.75,null,0,null,"Review terminal assumptions"],["Shares populated",null,1,null,0,null,"Check DART share fallback"],["Revenue complete",data.quality.find(x=>x.field==="매출액")?.missing_quarters||0,0,null,0,null,"Check XBRL mapping"],["Operating profit complete",data.quality.find(x=>x.field==="영업이익")?.missing_quarters||0,0,null,0,null,"Check XBRL mapping"],["FCFF formula",null,null,null,0,null,"NOPAT + D&A - CAPEX - ΔNWC"],["Equity bridge",null,null,null,0,null,"EV - net debt"],["Overall model status",null,null,null,0,null,"All required checks"]];
 checks.getRange("B6").formulas=[["='05 DCF'!B50"]]; checks.getRange("D6").formulas=[["=B6-C6"]]; checks.getRange("F6").formulas=[["=IF(B6>=C6,\"OK\",\"FAIL\")"]];
 checks.getRange("B7").formulas=[["='05 DCF'!B49"]]; checks.getRange("D7").formulas=[["=C7-B7"]]; checks.getRange("F7").formulas=[["=IF(B7<=C7,\"OK\",\"FAIL\")"]];
 checks.getRange("B8").formulas=[["='05 DCF'!B20"]]; checks.getRange("D8").formulas=[["=B8-C8"]]; checks.getRange("F8").formulas=[["=IF(B8>=C8,\"OK\",\"FAIL\")"]];
@@ -223,9 +246,21 @@ const sourceRows=[
   ["5% ownership reports",(data.marketContext?.ownership||[]).length,"reports",data.asOf,"Primary filing","https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS004&apiId=2019021","Primary","Connected","DART majorstock"],
   ["Market price",safe(data.capital?.current_price),"KRW",market.as_of,"Market","https://github.com/FinanceData/FinanceDataReader","Market","Connected","Latest available close"],
   ["Risk-free rate",safe(assumptions.risk_free_rate),"%",data.asOf,"Central bank","https://ecos.bok.or.kr","Primary","Connected","10Y Korean Treasury"],
+  ["KRX investor flow",data.marketContext?.external_drivers?.flows?.connected?1:0,"connection",data.marketContext?.external_drivers?.flows?.as_of||data.asOf,"Market microstructure","https://data.krx.co.kr","Market",data.marketContext?.external_drivers?.flows?.connected?"Connected":"Needs setup",data.marketContext?.external_drivers?.flows?.verdict||data.marketContext?.external_drivers?.flows?.reason||""],
   ["Research references",(data.researchReference?.expectations||[]).length,"items",data.asOf,"User-provided PDF","Local reference files","Secondary","Info",researchValuation.note||""],
   ["News context",(data.marketContext?.news||[]).length,"items",data.asOf,"News search","https://openapi.naver.com","Reported context","Info","Keyword matched"],
   ["Blog context",(data.marketContext?.blogs||[]).length,"items",data.asOf,"Blog search","https://openapi.naver.com","Unverified","Hypothesis only","Never treated as fact"],
+  ...(data.marketContext?.external_drivers?.status_rows||[]).map(r=>[
+    r.source,
+    r.connected?1:0,
+    "connection",
+    data.asOf,
+    r.evidence_level||"Context",
+    r.source==="KOSIS"?"https://kosis.kr":(r.source==="KAMIS"?"https://www.kamis.or.kr":(String(r.source).startsWith("UN")?"https://comtradeplus.un.org":"External API")),
+    r.evidence_level||"Context",
+    r.status,
+    `${r.detail||""}${r.action?` · ${r.action}`:""}`
+  ]),
 ];
 checks.getRange(`A18:I${17+sourceRows.length}`).values=sourceRows; tableBody(checks,`A18:I${17+sourceRows.length}`);
 section(checks,"A28:J28","Version Log"); checks.getRange("A29:D32").values=[["Version","Date","Change","Owner"],["v3.0",new Date().toISOString().slice(0,10),"Bottom-up SG&A build, revenue industry/share split, peer-beta WACC, causal interpretation","FinSight"],["v2.0",data.asOf,"Driver DCF, expectation gap, ownership, multi-method valuation","FinSight"],["v1.0",data.asOf,"DART quarterly tracker and simplified DCF","FinSight"]]; header(checks,"A29:D29"); tableBody(checks,"A30:D32"); checks.freezePanes.freezeRows(5); widths(checks,{A:28,B:16,C:13,D:14,E:15,F:48,G:18,H:14,I:48,J:12});
@@ -327,7 +362,7 @@ widths(wsheet,{A:28,B:16,C:14,D:14,E:12,F:12,G:12}); wsheet.freezePanes.freezeRo
 // 11 Causal Read — second-level interpretation in the workbook
 const pa = data.priceAction || {};
 const causal = wb.worksheets.add("11 Causal Read");
-title(causal, `${data.company} | Causal Read`, "숫자 너머의 원인 해석 — 기여 분해와 이상신호별 사유(근거 강도 표기)", "H");
+title(causal, `${data.company} | Causal Read`, "원인 해석 — 주가 변동요인 분해와 이상신호별 사유(근거 강도 표기)", "H");
 section(causal,"A4:H4",pa.verdict||"Price-action attribution");
 causal.mergeCells("A5:H6"); causal.getRange("A5").values=[[pa.thesis||""]]; causal.getRange("A5:H6").format={wrapText:true,verticalAlignment:"top",fill:C.pale,font:{color:C.text,size:10}};
 causal.getRange("A8:D8").values=[["Driver","Weight","Reading","Evidence / Level"]]; header(causal,"A8:D8");

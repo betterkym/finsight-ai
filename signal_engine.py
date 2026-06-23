@@ -167,7 +167,7 @@ def _root_cause(metric: str, kpis: pd.DataFrame) -> tuple[str, list[str], bool]:
         if (cogs or 0) <= 0 and (sga or 0) <= 0:
             return "원가율·판관비율 악화가 확인되지 않아 DART 본표만으로 OPM 하락 원인을 설명할 수 없습니다.", evidence, True
         main = "원가율" if max(cogs or 0, 0) >= max(sga or 0, 0) else "판관비율"
-        return f"DART 분해상 {main} 변화의 기여가 더 큽니다. 실제 사업 원인은 공시 주석 또는 외부 맥락 확인이 필요합니다.", evidence, True
+        return f"DART 분해상 {main} 변화의 기여가 더 큽니다. 실제 사업 원인은 공시 주석 또는 외부 정황 확인이 필요합니다.", evidence, True
     if metric in {"cfo_margin", "fcf_margin", "cash_conversion"}:
         ar = _num(latest.get("receivables_yoy"))
         inv = _num(latest.get("inventory_yoy"))
