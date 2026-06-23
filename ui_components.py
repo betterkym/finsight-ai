@@ -170,6 +170,10 @@ def inject_css() -> None:
       .fs-ctx-tag {display:inline-block;font-size:.66rem;font-weight:800;color:#1D4E89;background:#EFF4FB;border:1px solid #DCE7F5;border-radius:5px;padding:1px 7px;margin-right:7px;vertical-align:middle;}
       .fs-ctx-foot {font-size:.76rem;color:#667085;margin-top:9px;padding-top:8px;border-top:1px dashed #E2E8F0;line-height:1.5;}
       .fs-ctx-foot b {color:#475569;font-weight:700;}
+      .fs-kwsum {margin-bottom:11px;padding:11px 14px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;}
+      .fs-kwsum-h {font-size:.72rem;font-weight:800;color:#475569;letter-spacing:.02em;margin-bottom:7px;}
+      .fs-kw {display:inline-block;font-size:.78rem;color:#1D4E89;background:#EFF4FB;border:1px solid #DCE7F5;border-radius:999px;padding:2px 11px;margin:3px 6px 0 0;}
+      .fs-kw b {color:#0B1F33;font-weight:800;}
       /* Tracker '이번 분기 변화 해석' cards */
       .fs-tc-grid {display:grid;grid-template-columns:1fr 1fr;gap:12px;}
       .fs-tc {background:#FFFFFF;border:1px solid #E2E8F0;border-radius:10px;padding:15px 17px;box-shadow:0 1px 2px rgba(16,24,40,.04);}
@@ -255,6 +259,21 @@ def render_context_items(items: list[dict]) -> None:
     if not items:
         st.caption("키워드가 매칭된 외부 정황 자료가 없습니다.")
         return
+    # 객관적 요약: 자료들에서 실제 매칭된 키워드를 빈도순으로만 모은다(서사 해석은 하지 않음).
+    from collections import Counter
+
+    counter: Counter = Counter()
+    for it in items:
+        for keyword in (it.get("matched_keywords") or []):
+            if keyword:
+                counter[keyword] += 1
+    if len(counter) >= 2:
+        chips = "".join(f"<span class='fs-kw'>{_esc(k)} <b>×{n}</b></span>" for k, n in counter.most_common(8))
+        st.markdown(
+            f"<div class='fs-kwsum'><div class='fs-kwsum-h'>자료들에서 자주 매칭된 키워드 "
+            f"<span style='font-weight:500;color:#94A3B8'>· 빈도순, 해석 아님</span></div>{chips}</div>",
+            unsafe_allow_html=True,
+        )
     for it in items:
         desc = " ".join(str(it.get("description") or "").split())
         if len(desc) > 240:
