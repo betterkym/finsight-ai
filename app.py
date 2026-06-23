@@ -1113,6 +1113,22 @@ with dcf_tab:
                         column_config={"해석/사용법": st.column_config.TextColumn("해석/사용법", width="large")},
                     )
                 st.caption(tv_guidance.get("decision_rule", ""))
+                applicable = [r for r in tv_guidance.get("rows", []) if r.get("changes")]
+                if applicable:
+                    st.markdown("**숫자를 옮겨 적지 말고, 이 조합을 바로 적용해 보세요**")
+                    apply_cols = st.columns(len(applicable))
+                    for col, row in zip(apply_cols, applicable):
+                        price = _fmt(row.get("implied_price"), "원", 0)
+                        if col.button(f"▶ {row['case']} 적용 (주당 {price})", key=f"apply_tv_{row['case']}", width="stretch"):
+                            try:
+                                st.session_state["dcf"] = calculate_dcf(
+                                    kpis, {**dict(dcf["assumptions"]), **row["changes"]},
+                                    dcf["shares_outstanding"], dcf["net_debt"],
+                                )
+                                st.session_state["dcf_is_auto"], st.session_state["dcf_version"] = False, 7
+                                st.rerun()
+                            except ValueError as exc:
+                                st.error(str(exc))
         st.markdown("**5개년 FCFF 추정** · 금액 단위 억원")
         fc = dcf["forecast"]
         _eok = lambda col: pd.to_numeric(fc.get(col), errors="coerce") / 1e8

@@ -175,12 +175,13 @@ def build_terminal_value_guidance(kpis: pd.DataFrame, dcf: dict | None, current_
     review_g = max(0.8, min(g, 2.0) - 0.3)
     review_growth = min(year5_growth, review_g + 0.5)
     review_opm = min(year5_opm, max(latest_opm, year5_opm - 0.3))
-    review_calc = _calc_for({
+    review_changes = {
         "perpetual_growth": review_g,
         "revenue_growth_terminal": review_growth,
         "opm_terminal": review_opm,
         "erp": float(assumptions.get("erp", 6.0)) + 0.5,
-    })
+    }
+    review_calc = _calc_for(review_changes)
     review = {
         "case": "권장 Base 보정",
         "wacc": float((review_calc or {}).get("wacc") or wacc + 0.5),
@@ -189,17 +190,19 @@ def build_terminal_value_guidance(kpis: pd.DataFrame, dcf: dict | None, current_
         "terminal_opm": review_opm,
         "implied_price": (review_calc or {}).get("implied_price"),
         "action": "발표/보고서의 기준 시나리오는 이 조합을 먼저 보세요. 성장률은 GDP 근처로 낮추고 할인율은 0.5%p 높여 과대평가를 눌러봅니다.",
+        "changes": review_changes,
     }
 
     stress_g = max(0.5, review_g - 0.5)
     stress_growth = min(review_growth, stress_g + 0.3)
     stress_opm = max(year5_opm - 0.8, latest_opm - 0.5)
-    stress_calc = _calc_for({
+    stress_changes = {
         "perpetual_growth": stress_g,
         "revenue_growth_terminal": stress_growth,
         "opm_terminal": stress_opm,
         "erp": float(assumptions.get("erp", 6.0)) + 1.0,
-    })
+    }
+    stress_calc = _calc_for(stress_changes)
     stress = {
         "case": "하방 스트레스",
         "wacc": float((stress_calc or {}).get("wacc") or wacc + 1.0),
@@ -208,8 +211,10 @@ def build_terminal_value_guidance(kpis: pd.DataFrame, dcf: dict | None, current_
         "terminal_opm": stress_opm,
         "implied_price": (stress_calc or {}).get("implied_price"),
         "action": "주가 괴리가 큰 종목은 이 가격대까지 내려와도 투자 논리가 유지되는지 확인합니다. 여기서도 현재가보다 높아야 안전마진이 있습니다.",
+        "changes": stress_changes,
     }
 
+    base["changes"] = {}
     rows = [base, review, stress]
     for row in rows:
         price = row.get("implied_price")
