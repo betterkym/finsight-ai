@@ -144,10 +144,17 @@ def _suggestion_dialog(query: str, suggestions: list[dict]) -> None:
         "<div class='fs-nf-sub'>혹시 이걸 찾으셨나요? 누르면 바로 분석됩니다.</div></div>",
         unsafe_allow_html=True,
     )
-    cols = st.columns(2)
-    for idx, item in enumerate(suggestions):
+    def _candidate_button(container, idx, item):
         label = f"{item['name']}" + (f"  ·  {item['stock_code']}" if item.get("stock_code") else "")
-        cols[idx % 2].button(label, key=f"dlg_sug_{idx}", on_click=_pick_company, args=(item["name"],), width="stretch")
+        container.button(label, key=f"dlg_sug_{idx}", on_click=_pick_company, args=(item["name"],), width="stretch")
+
+    if len(suggestions) == 1:
+        _, mid, _ = st.columns([1, 2, 1])  # 후보 1개는 가운데 정렬
+        _candidate_button(mid, 0, suggestions[0])
+    else:
+        cols = st.columns(2)
+        for idx, item in enumerate(suggestions):
+            _candidate_button(cols[idx % 2], idx, item)
     st.caption("정식 명칭(예: LG전자)이나 6자리 종목코드로도 검색돼요.")
 
 
