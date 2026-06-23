@@ -829,20 +829,29 @@ def get_krx_flow_snapshot(stock_code: str, days: int = 90) -> dict:
         if frame is None or frame.empty:
             return {"connected": False, "source": "KRX/pykrx", "reason": "수급 데이터 없음", "status_rows": []}
         numeric = frame.apply(pd.to_numeric, errors="coerce")
+        # KRX detail 컬럼은 기관을 7개 세부항목으로 쪼개 제공한다(기관합계 컬럼 없음).
+        # 외국인도 본토/기타로 나뉘므로 각각 합산해 투자자 그룹별 순매수를 만든다.
+        INSTITUTION_COLS = ["금융투자", "보험", "투신", "사모", "은행", "기타금융", "연기금"]
+        FOREIGN_COLS = ["외국인합계", "외국인", "기타외국인"]
+        RETAIL_COLS = ["개인"]
 
-        def tail_sum(possible_cols: list[str], window: int) -> float | None:
-            for col in possible_cols:
-                if col in numeric:
-                    values = numeric[col].dropna().tail(min(window, len(numeric[col].dropna())))
-                    if not values.empty:
-                        return float(values.sum() / 1e8)
-            return None
+        def group_tail_sum(candidate_cols: list[str], window: int) -> float | None:
+            present = [c for c in candidate_cols if c in numeric]
+            # 합계 컬럼(예: 외국인합계)이 있으면 세부 항목과의 이중 계산을 피한다.
+            aggregate = next((c for c in present if c.endswith("합계")), None)
+            present = [aggregate] if aggregate else present
+            if not present:
+                return None
+            per_day = numeric[present].sum(axis=1, min_count=1).dropna()
+            if per_day.empty:
+                return None
+            return float(per_day.tail(min(window, len(per_day))).sum() / 1e8)
 
-        foreign_20d = tail_sum(["외국인합계", "외국인"], 20)
-        institution_20d = tail_sum(["기관합계", "기관"], 20)
-        retail_20d = tail_sum(["개인"], 20)
-        foreign_60d = tail_sum(["외국인합계", "외국인"], 60)
-        institution_60d = tail_sum(["기관합계", "기관"], 60)
+        foreign_20d = group_tail_sum(FOREIGN_COLS, 20)
+        institution_20d = group_tail_sum(INSTITUTION_COLS, 20)
+        retail_20d = group_tail_sum(RETAIL_COLS, 20)
+        foreign_60d = group_tail_sum(FOREIGN_COLS, 60)
+        institution_60d = group_tail_sum(INSTITUTION_COLS, 60)
         smart_20d = sum(x for x in [foreign_20d, institution_20d] if x is not None)
         if foreign_20d is None and institution_20d is None:
             verdict = "수급 열 매핑 확인 필요"

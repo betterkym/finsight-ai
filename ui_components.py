@@ -404,140 +404,57 @@ def render_landing(examples: list[str] | None = None) -> None:
     )
 
 
-def valuation_bridge_chart(model: dict) -> go.Figure:
-    """Football-field style: each method's implied price vs the current price line."""
-    pts = []
-    if model.get("dcf_price"):
-        pts.append(("DCF", float(model["dcf_price"]), "#94A3B8"))
-    if model.get("target_high") and model.get("target_low"):
-        pts.append(("교차 상단", float(model["target_high"]), "#C7D2DE"))
-    if model.get("target_mid"):
-        pts.append(("교차검증 중앙", float(model["target_mid"]), "#1D4E89"))
-    if model.get("target_low") and model.get("target_high"):
-        pts.append(("교차 하단", float(model["target_low"]), "#C7D2DE"))
-    for t in (model.get("broker_targets") or [])[:3]:
-        v = t.get("target_price")
-        if v:
-            pts.append((f"참고·{str(t.get('source',''))[:9]}", float(v), "#E2E8F0"))
-    labels = [p[0] for p in pts][::-1]
-    values = [p[1] for p in pts][::-1]
-    colors = [p[2] for p in pts][::-1]
-    fig = go.Figure(go.Bar(
-        y=labels, x=values, orientation="h", marker_color=colors,
-        text=[f"{v:,.0f}" for v in values], textposition="outside", cliponaxis=False,
-    ))
-    cur = model.get("current_price")
-    if cur:
-        fig.add_vline(x=float(cur), line_dash="dash", line_color="#B42318", line_width=2)
-        fig.add_annotation(x=float(cur), y=len(labels) - 0.4, text=f"현재가 {cur:,.0f}",
-                           showarrow=False, font={"size": 11, "color": "#B42318"}, xshift=2, yshift=12)
+def valuation_range_band(current_price: float | None, valuation_range: dict) -> go.Figure:
+    """Compact price-band view for the top of the valuation tab."""
+    low = valuation_range.get("low")
+    mid = valuation_range.get("mid")
+    high = valuation_range.get("high")
+    points = [
+        ("보수적", low, "#64748B"),
+        ("기준", mid, "#1D4E89"),
+        ("낙관적", high, "#94A3B8"),
+    ]
+    valid_values = [float(v) for _, v, _ in points if v is not None]
+    if current_price is not None:
+        valid_values.append(float(current_price))
+    fig = go.Figure()
+    if low is not None and high is not None:
+        fig.add_trace(go.Scatter(
+            x=[float(low), float(high)], y=[0, 0], mode="lines",
+            line={"color": "#CBD5E1", "width": 14}, hoverinfo="skip", showlegend=False,
+        ))
+    for label, value, color in points:
+        if value is None:
+            continue
+        fig.add_trace(go.Scatter(
+            x=[float(value)], y=[0], mode="markers+text",
+            marker={"size": 15, "color": color, "line": {"color": "#FFFFFF", "width": 2}},
+            text=[f"{label}<br>{float(value):,.0f}원"], textposition="top center",
+            hovertemplate=f"{label} 적정가<br>%{{x:,.0f}}원<extra></extra>",
+            showlegend=False,
+        ))
+    if current_price is not None:
+        fig.add_trace(go.Scatter(
+            x=[float(current_price)], y=[0], mode="markers+text",
+            marker={"symbol": "diamond", "size": 14, "color": "#B42318"},
+            text=[f"현재가<br>{float(current_price):,.0f}원"], textposition="bottom center",
+            hovertemplate="현재가<br>%{x:,.0f}원<extra></extra>",
+            showlegend=False,
+        ))
+    if valid_values:
+        lo, hi = min(valid_values), max(valid_values)
+        pad = max((hi - lo) * 0.16, hi * 0.03 if hi else 1)
+        x_range = [lo - pad, hi + pad]
+    else:
+        x_range = None
     fig.update_layout(
-        height=max(190, 70 + 34 * len(pts)), margin={"l": 10, "r": 30, "t": 38, "b": 10},
-        title={"text": "방법별 산정가치 vs 현재가 (원)", "font": {"size": 12, "color": "#475467"}},
-        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF", showlegend=False,
-        xaxis={"showgrid": True, "gridcolor": "#EEF2F6"},
+        height=190, margin={"l": 14, "r": 14, "t": 36, "b": 22},
+        title={"text": "현재 주가가 적정가 범위 안에서 어디에 있는지", "font": {"size": 13, "color": "#475467"}},
+        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
+        xaxis={"range": x_range, "tickformat": ",.0f", "showgrid": True, "gridcolor": "#EEF2F6", "title": None},
+        yaxis={"visible": False, "range": [-0.7, 0.7]},
     )
     return fig
-
-
-def _rpt_section(title: str, sub: str | None = None) -> None:
-    html = f'<div class="fs-rpt-sec">{_esc(title)}</div>'
-    if sub:
-        html += f'<div class="fs-rpt-sub">{_esc(sub)}</div>'
-    st.markdown(html, unsafe_allow_html=True)
-
-
-_RATING_CLS = {"비중확대": "fs-rating-buy", "중립": "fs-rating-hold", "비중축소": "fs-rating-sell", "의견 보류": "fs-rating-hold"}
-
-
-def render_report(model: dict, kpis: pd.DataFrame, fmt) -> None:
-    """Publication-style equity research one-pager rendered with charts and tables."""
-    code = f"<span>{_esc(model['code'])}</span>" if model.get("code") else ""
-    rating_cls = _RATING_CLS.get(model["rating"], "fs-rating-hold")
-    st.markdown(
-        '<div class="fs-rpt-head"><div>'
-        f'<div class="fs-rpt-co">{_esc(model["company"])}{code}</div>'
-        f'<div class="fs-rpt-meta">{_esc(model["period"])} 기준 · 생성 {_esc(model["gen_date"])} · DART 재무·공시 / 시세 / 리서치 참고</div>'
-        '</div><div class="fs-rating-wrap">'
-        f'<span class="fs-rating {rating_cls}">정량 투자의견 · {_esc(model["rating"])}</span>'
-        f'<div class="fs-rating-note">{_esc(model["rating_note"])}</div>'
-        '</div></div>',
-        unsafe_allow_html=True,
-    )
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("현재가", fmt(model.get("current_price"), "원", 0))
-    c2.metric("산정가치(중앙)", fmt(model.get("target_mid"), "원", 0), fmt(model.get("upside"), "% vs 현재가"))
-    c3.metric("DCF 주당가치", fmt(model.get("dcf_price"), "원", 0), fmt(model.get("dcf_gap"), "%"))
-    c4.metric("산정가치 범위", f"{fmt(model.get('target_low'),'',0)}~{fmt(model.get('target_high'),'원',0)}")
-    if model.get("verdict"):
-        st.markdown(
-            '<div class="fs-rpt-verdict"><div class="fs-rpt-verdict-k">핵심 결론</div>'
-            f'<div class="fs-rpt-verdict-t">{_esc(model["verdict"])}</div></div>',
-            unsafe_allow_html=True,
-        )
-
-    _rpt_section("I. Investment Summary")
-    st.markdown("".join(f'<div class="fs-rpt-li">{p}</div>' for p in model["summary_points"]), unsafe_allow_html=True)
-
-    _rpt_section("II. 실적 리뷰", f"{model['period']} 기준 · 분기 추세와 핵심 계정")
-    if not kpis.empty:
-        st.plotly_chart(financial_trend_chart(kpis), width="stretch")
-    snap = pd.DataFrame(model["snapshot"], columns=["지표", "값", "변화", "코멘트"])
-    st.dataframe(snap, width="stretch", hide_index=True,
-                 column_config={"코멘트": st.column_config.TextColumn("코멘트", width="large")})
-    if model.get("thesis"):
-        st.markdown(f'<div class="fs-rpt-reason">{_esc(model["thesis"])}</div>', unsafe_allow_html=True)
-    for card in model.get("tracker_commentary", [])[:3]:
-        st.markdown(f'<div class="fs-rpt-li"><b>{_esc(card.get("title"))}</b> — {_esc(card.get("read"))}</div>', unsafe_allow_html=True)
-
-    _rpt_section("III. 밸류에이션", "목표가 한 점이 아니라 방법별 밴드로 본다")
-    vcol1, vcol2 = st.columns([3, 2])
-    with vcol1:
-        st.plotly_chart(valuation_bridge_chart(model), width="stretch")
-    with vcol2:
-        val_df = pd.DataFrame(model["valuation_rows"], columns=["방법", "주당가치", "현재가 대비", "비고"])
-        st.dataframe(val_df, width="stretch", hide_index=True,
-                     column_config={"비고": st.column_config.TextColumn("비고", width="medium")})
-    w = model.get("wacc") or {}
-    if w:
-        st.caption(
-            f"WACC {fmt(w.get('wacc'),'%',2)} = Rf {fmt(w.get('rf'),'%')} + β {fmt(w.get('beta'),'',3)} "
-            f"× ERP {fmt(w.get('erp'),'%')} → Ke {fmt(w.get('cost_equity'),'%')} · β 산출 {w.get('beta_source','')}"
-        )
-    if model.get("opm_path"):
-        st.caption("OPM 경로(판관비 bottom-up): " + " → ".join(fmt(v, "%") for v in model["opm_path"]))
-    if model.get("terminal_share") is not None:
-        st.caption(f"터미널가치 비중 {fmt(model['terminal_share'],'%')} — 잔존가치 의존도·할인율 민감도 동반 확인")
-
-    if model.get("attribution"):
-        _rpt_section("IV. 주가 괴리 분석", "실적과 주가가 따로 움직인 이유를 네 축으로 분해")
-        if any(model["frame"].get(k) is not None for k in ("ret_1m", "ret_3m", "ret_6m")):
-            st.plotly_chart(price_path_chart(model["frame"]), width="stretch")
-        render_attribution(model["attribution"])
-        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-        for i, reason in enumerate(model["gap_reasons"], 1):
-            st.markdown(f'<div class="fs-rpt-reason">{i}. {reason}</div>', unsafe_allow_html=True)
-
-    _rpt_section("V. 리스크 및 체크포인트", "확인되면 무엇을 바꾸고, 아니면 무엇을 보수적으로 둘지")
-    if model["decision_rows"]:
-        dec_df = pd.DataFrame(model["decision_rows"], columns=["확인할 것", "확인되면", "확인 안 되면", "가정 조정"])
-        st.dataframe(dec_df, width="stretch", hide_index=True)
-    for idx, item in enumerate(model.get("interpreted", []), 1):
-        I = item.get("interpretation", {})
-        top = (I.get("cause_candidates") or [{}])[0]
-        cause = f" · 원인 후보: [{top.get('evidence_level','')}] {top.get('cause','')}" if top.get("cause") else ""
-        st.markdown(
-            f'<div class="fs-rpt-li"><b>{idx}. {_esc(I.get("headline", item.get("label","")))}</b> '
-            f'(해석 신뢰도 {_esc(I.get("confidence",""))}){_esc(cause)}</div>',
-            unsafe_allow_html=True,
-        )
-
-    st.markdown(
-        '<div class="fs-rpt-disc">본 자료는 DART 재무 패턴과 공시·뉴스·리서치 참고자료를 함께 검토한 자료입니다. '
-        '‘정량 투자의견’은 교차검증 산정가치와 현재가의 괴리에서 기계적으로 도출한 참고치이며 공식 투자의견이 아닙니다. '
-        '투자 판단은 다음 분기 확인되는 실적과 수급을 함께 보아야 합니다.</div>',
-        unsafe_allow_html=True,
-    )
 
 
 def price_path_chart(frame: dict) -> go.Figure:

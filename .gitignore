@@ -12,3 +12,4 @@ venv/
 tmp/
 .matplotlib-cache/
 outputs/
+.matplotlib/

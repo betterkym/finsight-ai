@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from business_focus import build_assumption_recommendations, build_dcf_evidence_bridge
 from data_collector import (
@@ -11,19 +12,22 @@ from data_collector import (
     get_market_beta, get_market_snapshot, get_peer_beta_inputs, get_peer_financials,
     get_quarterly_financials, get_recent_disclosures, get_sga_breakdown, recommend_peers,
 )
-from diagnostics import build_valuation_range, calculate_dcf, calculate_multiple_valuation, run_dcf_sensitivity
+from diagnostics import (
+    build_terminal_value_guidance, build_valuation_range, calculate_dcf,
+    calculate_multiple_valuation, run_dcf_sensitivity,
+)
 from interpretation import interpret_price_action, interpret_signal
 from investment_thesis import build_investment_thesis
 from kpi_engine import calculate_quarterly_kpis
 from mode_views import build_peer_benchmark, build_peer_comparison, build_tracker_table
 from report_generator import export_excel
-from report_templates import build_report_model, generate_analysis_summary
+from report_templates import generate_analysis_html_report
 from research_reference import get_research_reference
 from signal_engine import attach_context, attach_peer_evidence, build_margin_bridge, scan_financial_health
 from ui_components import (
     financial_trend_chart, inject_css, peer_benchmark_chart, price_path_chart,
     render_attribution, render_checkpoints, render_context_items, render_header, render_interpretation,
-    render_landing, render_process_steps, render_quality, render_report, render_tab_intro,
+    render_landing, render_process_steps, render_quality, render_tab_intro, valuation_range_band,
 )
 from validation_agenda import build_data_quality_report, has_blocking_gaps
 from valuation_model import build_opm_path, build_structured_model
@@ -367,6 +371,146 @@ def _build_tracker_commentary(
     return cards[:4]
 
 
+def _apply_external_dcf_adjustments(assumptions: dict, context: dict, thesis: dict, latest: pd.Series) -> tuple[dict, list[dict]]:
+    """Apply a conservative, evidence-labeled external-variable layer to auto DCF assumptions."""
+    adjusted = dict(assumptions)
+    rows: list[dict] = []
+
+    def add(driver: str, signal: str, target: str, before: float | None, after: float | None, reason: str, confidence: str = "Medium"):
+        rows.append({
+            "외부 변수": driver,
+            "현재 신호": signal,
+            "DCF 반영": target,
+            "조정 전": before,
+            "조정 후": after,
+            "해석": reason,
+            "신뢰도": confidence,
+        })
+
+    drivers = (context or {}).get("external_drivers", {})
+    flows = drivers.get("flows", {})
+    if flows.get("connected"):
+        foreign = _safe_num(flows.get("foreign_20d_eok")) or 0
+        institution = _safe_num(flows.get("institution_20d_eok")) or 0
+        net_flow = foreign + institution
+        if net_flow < -100:
+            before = float(adjusted.get("erp", 6.0))
+            after = round(before + 0.4, 2)
+            adjusted["erp"] = after
+            add(
+                "수급 부담",
+                f"20일 외국인+기관 {net_flow:+,.0f}억원",
+                "ERP +0.4%p → WACC 보수화",
+                before,
+                after,
+                "실적과 별개로 매도 압력이 남아 있으면 멀티플 회복이 지연될 수 있어 할인율 레이어에 반영합니다.",
+                "Market",
+            )
+        elif net_flow > 100:
+            before = float(adjusted.get("erp", 6.0))
+            after = round(max(before - 0.2, before - 0.2), 2)
+            adjusted["erp"] = after
+            add(
+                "수급 개선",
+                f"20일 외국인+기관 {net_flow:+,.0f}억원",
+                "ERP -0.2%p → 할인 완화",
+                before,
+                after,
+                "수급이 회복되면 펀더멘털 개선이 가격에 반영될 가능성이 커져 할인율을 소폭 완화합니다.",
+                "Market",
+            )
+
+    market = (context or {}).get("market", {})
+    ret_3m = _safe_num(market.get("return_3m"))
+    drawdown = _safe_num(market.get("drawdown_52w_high"))
+    opm_yoy = _safe_num(latest.get("opm_yoy_pp"))
+    if ret_3m is not None and ret_3m < -10 and (opm_yoy is None or opm_yoy >= -1):
+        before = float(adjusted.get("erp", 6.0))
+        after = round(max(float(adjusted.get("erp", before)), before) + 0.2, 2)
+        adjusted["erp"] = after
+        add(
+            "주가·실적 괴리",
+            f"3개월 수익률 {ret_3m:+.1f}%, 52주 고점 대비 {_fmt_delta(drawdown)}",
+            "ERP +0.2%p → 리레이팅 지연 반영",
+            before,
+            after,
+            "실적 훼손이 크지 않은데 주가가 약하면 시장은 지속성·수급·테마 부재를 할인하고 있을 가능성이 큽니다.",
+            "Market",
+        )
+
+    text_pool = " ".join(
+        f"{item.get('title','')} {item.get('summary','')} {item.get('description','')}"
+        for item in (thesis or {}).get("context", [])
+    )
+    macro = drivers.get("macro", {})
+    has_cost_signal = any(keyword in text_pool for keyword in ("원가", "유가", "곡물", "소맥", "팜유", "환율", "전쟁"))
+    if has_cost_signal or macro.get("fred_wheat") or macro.get("fred_usd_krw"):
+        before = float(adjusted.get("opm", 0.0))
+        haircut = 0.3
+        cogs_yoy = _safe_num(latest.get("cogs_ratio_yoy_pp"))
+        if cogs_yoy is not None and cogs_yoy > 0:
+            haircut = min(0.8, max(0.3, cogs_yoy * 0.35))
+        after = round(before - haircut, 1)
+        adjusted["opm"] = after
+        if "opm_path" in adjusted and adjusted["opm_path"]:
+            adjusted["opm_path"] = [round(float(v) - haircut, 1) if v is not None else None for v in adjusted["opm_path"]]
+        add(
+            "환율·원재료 압박",
+            "뉴스/매크로 proxy에서 원가 또는 환율 키워드 감지",
+            f"1년차 OPM {haircut:.1f}%p 하향",
+            before,
+            after,
+            "원가·환율 변수는 매출보다 마진에 먼저 반영합니다. 실제 원가율 안정이 확인되기 전까지 OPM을 보수화합니다.",
+            "Context",
+        )
+
+    has_growth_signal = any(keyword in text_pool for keyword in ("수출", "해외", "공장", "증설", "가동률"))
+    if has_growth_signal:
+        capex_ratio = _safe_num(latest.get("capex_ratio"))
+        if capex_ratio is not None and capex_ratio > float(adjusted.get("capex_ratio", capex_ratio)) * 1.15:
+            before = float(adjusted.get("capex_ratio", capex_ratio))
+            after = round(max(before, capex_ratio), 1)
+            adjusted["capex_ratio"] = after
+            add(
+                "증설·해외 성장 옵션",
+                f"CAPEX/매출 {_fmt_delta(capex_ratio)} 및 관련 키워드 감지",
+                "CAPEX/매출 상향 유지",
+                before,
+                after,
+                "증설은 성장 옵션이지만 매출 전환 전까지는 FCFF를 누르는 요인입니다. 가동률·해외 매출 확인 전에는 CAPEX 부담을 먼저 반영합니다.",
+                "Filing/Context",
+            )
+        else:
+            before = float(adjusted.get("revenue_growth_terminal", adjusted.get("revenue_growth", 0)))
+            after = round(min(before + 0.3, float(adjusted.get("revenue_growth", before))), 1)
+            adjusted["revenue_growth_terminal"] = after
+            add(
+                "해외·증설 성장 후보",
+                "수출/공장/증설 관련 키워드 감지",
+                "5년차 성장률 +0.3%p 한도",
+                before,
+                after,
+                "외부 자료만으로 장기 성장률을 크게 올리지는 않고, 확인 전에는 제한적인 옵션 가치만 반영합니다.",
+                "Context",
+            )
+
+    if any(keyword in text_pool for keyword in ("정책", "대통령", "수혜주", "스페이스X", "테마")):
+        before = float(adjusted.get("erp", 6.0))
+        after = round(before + 0.3, 2)
+        adjusted["erp"] = after
+        add(
+            "테마성 가격 변동",
+            "정책/테마 키워드 감지",
+            "ERP +0.3%p → 테마 프리미엄 할인",
+            before,
+            after,
+            "테마는 가격 변동을 만들 수 있지만 지속 현금흐름 근거가 약하면 DCF에는 할인율 보수화로 반영합니다.",
+            "Context",
+        )
+
+    return adjusted, rows
+
+
 with st.sidebar:
     st.markdown(
         '<div class="fs-side-cap">DART Filing Analysis Workbench</div>',
@@ -488,11 +632,21 @@ auto_assumptions = {
     "perpetual_growth": perpetual_default, "tax_rate": 24.0,
     "debt_weight": float(capital.get("debt_weight") or 0), "cost_of_debt": 4.5,
 }
-needs_auto = "dcf" not in st.session_state or (st.session_state.get("dcf_is_auto") and st.session_state.get("dcf_version") != 6)
+auto_assumptions, external_dcf_adjustments = _apply_external_dcf_adjustments(auto_assumptions, context, thesis, latest)
+growth_default = float(auto_assumptions["revenue_growth"])
+growth_terminal_default = float(auto_assumptions["revenue_growth_terminal"])
+opm_default = float(auto_assumptions["opm"])
+opm_terminal_default = float(auto_assumptions["opm_terminal"])
+capex_default = float(auto_assumptions["capex_ratio"])
+perpetual_default = float(auto_assumptions["perpetual_growth"])
+if opm_build and auto_assumptions.get("opm_path"):
+    opm_build["opm_path"] = auto_assumptions["opm_path"]
+    structured["opm_build"] = opm_build
+needs_auto = "dcf" not in st.session_state or (st.session_state.get("dcf_is_auto") and st.session_state.get("dcf_version") != 7)
 if needs_auto and float(capital.get("shares_outstanding") or 0) > 0:
     try:
         st.session_state["dcf"] = calculate_dcf(kpis, auto_assumptions, float(capital["shares_outstanding"]), float(capital.get("net_debt") or 0))
-        st.session_state["dcf_is_auto"], st.session_state["dcf_version"] = True, 6
+        st.session_state["dcf_is_auto"], st.session_state["dcf_version"] = True, 7
     except ValueError as exc:
         st.session_state["dcf_error"] = str(exc)
 dcf = st.session_state.get("dcf")
@@ -510,18 +664,27 @@ h2.metric("영업이익률", _fmt(latest.get("opm"), "%"), _fmt(latest.get("opm_
 h3.metric("FCF 마진", _fmt(latest.get("fcf_margin"), "%"))
 h4.metric("우선 검토", f"{len(abnormal)}건", f"결측 {len(review_items)}건")
 
+export_anomalies = [{"signal": x["label"], "severity": x["severity"], "comment": x["dart_answer"]} for x in abnormal]
+html_report = generate_analysis_html_report(
+    company, kpis, margin_bridge, export_anomalies, dcf,
+    price_action=price_action, interpreted=interpreted, structured=structured,
+    valuation_range=valuation_range, capital=capital, research=research,
+    thesis=thesis, tracker_commentary=tracker_commentary,
+    terminal_guidance=build_terminal_value_guidance(kpis, dcf, capital.get("current_price")),
+    market_context=context,
+    external_dcf_adjustments=external_dcf_adjustments,
+)
+
 report_tab, brief_tab, tracker_tab, diagnostic_tab, peer_tab, dcf_tab, export_tab = st.tabs(
     ["01 리포트", "02 투자판단", "03 실적 트래커", "04 이상 탐지·원인", "05 동종기업 검증", "06 가치평가", "07 Excel·근거"]
 )
 
 with report_tab:
-    report_model = build_report_model(
-        company, kpis, st.session_state.get("dcf"),
-        price_action=price_action, interpreted=interpreted, structured=structured,
-        valuation_range=valuation_range, capital=capital, research=research,
-        thesis=thesis, tracker_commentary=tracker_commentary,
-    )
-    render_report(report_model, kpis, _fmt)
+    render_tab_intro("발간 투자 리포트", "실적·밸류에이션·수급·리스크를 한 장의 발간형 리포트로 정리합니다.", "투자의견 · 산정가치 · 차트 · 체크포인트")
+    rc1, rc2 = st.columns(2)
+    rc1.download_button("HTML 리포트 다운로드", html_report.encode("utf-8"), file_name=f"FinSight_{company}_Investment_Note.html", mime="text/html", type="primary", width="stretch")
+    rc2.caption("브라우저에서 열어 인쇄(⌘P) → PDF로 저장하면 발간용 PDF가 됩니다.")
+    components.html(html_report, height=2200, scrolling=True)
 
 with brief_tab:
     render_tab_intro("투자판단과 기대치 괴리", "실적이 좋아도 주가가 오르지 않는 이유를 펀더멘털·기대·수급·촉매 시점으로 분리합니다.", "핵심 판단 · 사실과 해석 구분 · 변동요인 분해 · 확인 포인트")
@@ -532,9 +695,9 @@ with brief_tab:
     b2.metric("52주 고점 대비", _fmt(context.get("market", {}).get("drawdown_52w_high"), "%"))
     surprise_values = [row["value"] for row in research.get("expectations", []) if row.get("metric") == "operating_profit_surprise"]
     b3.metric("영업이익 기대 괴리", _fmt(pd.Series(surprise_values).median() if surprise_values else None, "%"))
-    b4.metric("교차가치 중앙", _fmt(valuation_range.get("mid"), "원", 0))
+    b4.metric("기준 적정가", _fmt(valuation_range.get("mid"), "원", 0))
     if any(price_action["price_frame"].get(k) is not None for k in ("ret_1m", "ret_3m", "ret_6m")):
-        st.plotly_chart(price_path_chart(price_action["price_frame"]), width="stretch")
+        st.plotly_chart(price_path_chart(price_action["price_frame"]), width="stretch", key="brief_price_path_chart")
     st.markdown("#### 주가 변동요인 분해")
     st.caption("주가 등락을 펀더멘털·기대치·수급·촉매로 나눠 각 요인의 기여도를 추정합니다.")
     render_attribution(price_action["attribution"])
@@ -547,7 +710,7 @@ with brief_tab:
 
 with tracker_tab:
     render_tab_intro("분기 실적 트래커", "어닝 업데이트 숫자를 옮기고 방향이 바뀐 계정을 확인합니다.", "분기 원본 · QoQ/YoY · 매출/OPM/CFO 추세 · 결측")
-    st.plotly_chart(financial_trend_chart(kpis), width="stretch")
+    st.plotly_chart(financial_trend_chart(kpis), width="stretch", key="tracker_financial_trend_chart")
     if tracker_commentary:
         st.markdown("#### 이번 분기 변화 해석")
         st.caption("숫자 변화 → 가능한 원인 → 투자자 액션 → DCF 가정 연결 순서로 읽도록 구성했습니다.")
@@ -602,14 +765,14 @@ with peer_tab:
     st.write(f"비교기업: **{', '.join(st.session_state.get('peer_selection', [])) or '없음'}**")
     st.caption(f"선정 방식: {st.session_state.get('peer_method')}")
     if peer_kpis:
-        st.plotly_chart(peer_benchmark_chart(kpis, peer_kpis), width="stretch")
+        st.plotly_chart(peer_benchmark_chart(kpis, peer_kpis), width="stretch", key="peer_benchmark_chart")
         st.dataframe(peer_benchmark.style.format({"분석기업": "{:.1f}", "동종기업 중앙값": "{:.1f}", "격차": "{:+.1f}"}, na_rep="N/A"), width="stretch", hide_index=True)
         st.dataframe(build_peer_comparison(kpis, peer_kpis).style.format(precision=1, na_rep="N/A"), width="stretch")
     else:
         st.warning("추천 가능한 동종기업이 없습니다. 자동 추천을 끄고 직접 선택해 주세요.")
 
 with dcf_tab:
-    render_tab_intro("가치평가 교차검증", "단일 DCF 숫자를 정답처럼 제시하지 않고 DCF·PER·EV/EBITDA·증권사 참고값의 차이를 드러냅니다.", "명시적 FCFF · 베타 guardrail · 터미널가치 점검 · 멀티플 밴드 · 방법별 괴리")
+    render_tab_intro("가치평가 점검", "단일 DCF 숫자를 정답처럼 제시하지 않고 DCF·PER·EV/EBITDA·증권사 참고값의 차이를 드러냅니다.", "명시적 FCFF · 베타 guardrail · 터미널가치 점검 · 적정가 범위 · 추정치 편차")
     evidence_df = pd.DataFrame([{"가정": row["assumption"], "과거 기반": row["base"], "증거 반영": row["evidence_adjusted"], "조정": row["action"], "신뢰도": row["confidence"], "연결 근거": " / ".join(row["evidence"]) or row["source"]} for row in dcf_bridge])
     st.dataframe(
         evidence_df, width="stretch", hide_index=True,
@@ -619,6 +782,18 @@ with dcf_tab:
             "연결 근거": st.column_config.TextColumn("연결 근거", width="large"),
         },
     )
+    if external_dcf_adjustments:
+        st.markdown("#### 외부 변수 DCF 반영")
+        st.caption("뉴스·수급·환율·원재료·테마는 확정 실적이 아니므로 보수적인 조정 레이어로만 반영합니다.")
+        external_df = pd.DataFrame(external_dcf_adjustments)
+        st.dataframe(
+            external_df.style.format({"조정 전": "{:.2f}", "조정 후": "{:.2f}"}, na_rep="—"),
+            width="stretch", hide_index=True,
+            column_config={
+                "현재 신호": st.column_config.TextColumn("현재 신호", width="medium"),
+                "해석": st.column_config.TextColumn("해석", width="large"),
+            },
+        )
 
     st.markdown("#### 매출·원가 구조 빌드 — OPM을 단일 추정이 아닌 바텀업으로 재구성")
     rev_model, sga_model, wacc_model = structured["revenue"], structured["sga"], structured["wacc"]
@@ -703,18 +878,69 @@ with dcf_tab:
         }
         try:
             st.session_state["dcf"] = calculate_dcf(kpis, assumptions, shares, net_debt)
-            st.session_state["dcf_is_auto"], st.session_state["dcf_version"] = False, 6
+            st.session_state["dcf_is_auto"], st.session_state["dcf_version"] = False, 7
         except ValueError as exc:
             st.error(str(exc))
     dcf = st.session_state.get("dcf")
     valuation_range = build_valuation_range(dcf, multiple_valuation, capital.get("current_price"))
+    st.markdown("#### 현재가와 적정가 범위")
+    st.caption("DCF, PER, EV/EBITDA, 리서치 참고값을 함께 본 참고 범위입니다. 확정 목표가는 아닙니다.")
+    if not multiple_valuation.empty:
+        p1, p2, p3, p4, p5 = st.columns(5)
+        p1.metric("현재가", _fmt(capital.get("current_price"), "원", 0))
+        p2.metric("보수적 적정가", _fmt(valuation_range.get("low"), "원", 0))
+        p3.metric("기준 적정가", _fmt(valuation_range.get("mid"), "원", 0))
+        p4.metric("낙관적 적정가", _fmt(valuation_range.get("high"), "원", 0))
+        p5.metric("추정치 편차", _fmt(valuation_range.get("dispersion"), "%", 1))
+        st.plotly_chart(
+            valuation_range_band(capital.get("current_price"), valuation_range),
+            width="stretch",
+            key="valuation_range_band_chart",
+        )
+        with st.expander("계산에 사용한 방법별 값 보기", expanded=False):
+            mv = multiple_valuation.rename(columns={
+                "method": "방법", "case": "케이스", "multiple": "배수",
+                "implied_price": "적정주가", "upside": "상승여력", "basis": "근거",
+            })
+            st.dataframe(
+                mv.style.format({"배수": "{:.1f}", "적정주가": "{:,.0f}", "상승여력": "{:+.1f}%"}, na_rep="—"),
+                width="stretch", hide_index=True,
+                column_config={"근거": st.column_config.TextColumn("근거", width="medium")},
+            )
+            note = research.get("valuation", {}).get("note")
+            if note:
+                st.caption(note)
+    else:
+        st.info("적정가 범위를 만들 수 있는 비교값이 아직 부족합니다. DCF 계산값과 리서치 참고값을 먼저 확인하세요.")
+
     if dcf:
         if st.session_state.get("dcf_is_auto"):
             st.info("탐지 근거를 반영한 예비 DCF입니다. 확정 가치가 아니라 검토 시작점입니다.")
         d1, d2, d3, d4 = st.columns(4)
         d1.metric("WACC", _fmt(dcf["wacc"], "%", 2)); d2.metric("WACC-g", _fmt(dcf.get("wacc_growth_spread"), "%p", 2)); d3.metric("TV/EV", _fmt(dcf.get("terminal_value_share"), "%", 1)); d4.metric("DCF 주당가치", _fmt(dcf["implied_price"], "원", 0))
         if dcf.get("guardrails", {}).get("terminal_value_watch"):
-            st.warning("기업가치의 75% 이상이 터미널가치에서 발생합니다. 성장률·WACC 민감도를 보수적으로 확인하세요.")
+            tv_guidance = build_terminal_value_guidance(kpis, dcf, capital.get("current_price"))
+            st.warning(tv_guidance.get("headline") or "터미널가치 비중이 높습니다.")
+            with st.expander("상세 조정안 보기 — 권장 Base·하방 스트레스", expanded=False):
+                st.write(tv_guidance.get("diagnosis", ""))
+                tv_rows = pd.DataFrame(tv_guidance.get("rows", []))
+                if not tv_rows.empty:
+                    tv_display = tv_rows.rename(columns={
+                        "case": "시나리오", "wacc": "WACC(%)", "perpetual_growth": "영구성장률(%)",
+                        "terminal_revenue_growth": "5년차 성장률(%)", "terminal_opm": "5년차 OPM(%)",
+                        "spread": "WACC-g(%p)", "implied_price": "주당가치", "upside": "현재가 대비",
+                        "action": "해석/사용법",
+                    })
+                    st.dataframe(
+                        tv_display[["시나리오", "WACC(%)", "영구성장률(%)", "WACC-g(%p)", "5년차 성장률(%)", "5년차 OPM(%)", "주당가치", "현재가 대비", "해석/사용법"]].style.format({
+                            "WACC(%)": "{:.2f}", "영구성장률(%)": "{:.1f}", "WACC-g(%p)": "{:.2f}",
+                            "5년차 성장률(%)": "{:.1f}", "5년차 OPM(%)": "{:.1f}",
+                            "주당가치": "{:,.0f}", "현재가 대비": "{:+.1f}%",
+                        }, na_rep="—"),
+                        width="stretch", hide_index=True,
+                        column_config={"해석/사용법": st.column_config.TextColumn("해석/사용법", width="large")},
+                    )
+                st.caption(tv_guidance.get("decision_rule", ""))
         st.markdown("**5개년 FCFF 추정** · 금액 단위 억원")
         fc = dcf["forecast"]
         _eok = lambda col: pd.to_numeric(fc.get(col), errors="coerce") / 1e8
@@ -739,25 +965,9 @@ with dcf_tab:
         st.dataframe(sensitivity.pivot(index="성장률 변화(%p)", columns="OPM 변화(%p)", values="주당가치").style.format("{:,.0f}"), width="stretch")
     elif st.session_state.get("dcf_error"):
         st.error(st.session_state["dcf_error"])
-    st.markdown("#### 멀티플·리서치 목표가 교차검증")
-    if not multiple_valuation.empty:
-        mv = multiple_valuation.rename(columns={
-            "method": "방법", "case": "케이스", "multiple": "배수",
-            "implied_price": "적정주가", "upside": "상승여력", "basis": "근거",
-        })
-        st.dataframe(
-            mv.style.format({"배수": "{:.1f}", "적정주가": "{:,.0f}", "상승여력": "{:+.1f}%"}, na_rep="—"),
-            width="stretch", hide_index=True,
-            column_config={"근거": st.column_config.TextColumn("근거", width="medium")},
-        )
-        v1, v2, v3, v4 = st.columns(4)
-        v1.metric("교차가치 하단", _fmt(valuation_range.get("low"), "원", 0)); v2.metric("중앙", _fmt(valuation_range.get("mid"), "원", 0)); v3.metric("상단", _fmt(valuation_range.get("high"), "원", 0)); v4.metric("방법론 분산", _fmt(valuation_range.get("dispersion"), "%", 1))
-        st.caption(research.get("valuation", {}).get("note", "멀티플 밴드는 참고 범위이며 확정 목표가가 아닙니다."))
 
 with export_tab:
     render_tab_intro("Excel과 근거 패키지", "웹에서 찾은 이슈와 가정을 모델 작업으로 넘기고 출처·결측·검증 상태를 보존합니다.", "Summary · Quarterly · Diagnostics · Peers · DCF · Checks/Sources")
-    dcf = st.session_state.get("dcf")
-    export_anomalies = [{"signal": x["label"], "severity": x["severity"], "comment": x["dart_answer"]} for x in abnormal]
     if has_blocking_gaps(quality):
         st.warning("매출액 또는 영업이익 결측이 있습니다. Excel Checks 시트를 먼저 확인하세요.")
     excel = export_excel(
@@ -768,12 +978,6 @@ with export_tab:
         valuation_range=valuation_range, research_reference=research,
         structured=structured, price_action=price_action, interpreted=interpreted,
         tracker_commentary=tracker_commentary,
-    )
-    summary = generate_analysis_summary(
-        company, kpis, margin_bridge, export_anomalies, dcf,
-        price_action=price_action, interpreted=interpreted, structured=structured,
-        valuation_range=valuation_range, capital=capital, research=research,
-        thesis=thesis, tracker_commentary=tracker_commentary,
     )
     coverage = pd.DataFrame([
         {"근거 계층": "DART 재무", "상태": "Connected", "내용": f"{len(kpis)}개 분기"},
@@ -789,4 +993,4 @@ with export_tab:
     st.dataframe(coverage, width="stretch", hide_index=True)
     c1, c2 = st.columns(2)
     c1.download_button("Analyst Workbook 다운로드", excel, file_name=f"FinSight_{company}_Analyst_Workbook.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", width="stretch")
-    c2.download_button("종합 투자 메모 다운로드", summary.encode("utf-8"), file_name=f"FinSight_{company}_Investment_Note.md", mime="text/markdown", width="stretch")
+    c2.download_button("브라우저용 HTML 리포트 다운로드", html_report.encode("utf-8"), file_name=f"FinSight_{company}_Investment_Note.html", mime="text/html", width="stretch")

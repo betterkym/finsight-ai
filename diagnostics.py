@@ -123,6 +123,107 @@ def calculate_dcf(
     }
 
 
+def build_terminal_value_guidance(kpis: pd.DataFrame, dcf: dict | None, current_price: float | None = None) -> dict:
+    """Make a high terminal-value share actionable with recommended assumption sets."""
+    if not dcf:
+        return {}
+    assumptions = dict(dcf.get("assumptions") or {})
+    if not assumptions:
+        return {}
+
+    terminal_share = dcf.get("terminal_value_share")
+    wacc = float(dcf.get("wacc") or 0)
+    g = float(assumptions.get("perpetual_growth") or 0)
+    spread = float(dcf.get("wacc_growth_spread") or (wacc - g))
+    year5_growth = float(assumptions.get("revenue_growth_terminal", assumptions.get("revenue_growth", 0)) or 0)
+    year5_opm = float(assumptions.get("opm_terminal", assumptions.get("opm", 0)) or 0)
+    latest_opm = kpis["opm"].dropna().tail(4).median() if "opm" in kpis else np.nan
+    latest_opm = float(latest_opm) if pd.notna(latest_opm) else year5_opm
+
+    reasons = []
+    if terminal_share is not None and terminal_share >= 75:
+        reasons.append(f"DCF 가치의 {terminal_share:.1f}%가 5년 뒤 잔존가치에서 나옵니다.")
+    if spread < 3.0:
+        reasons.append(f"WACC-g 스프레드가 {spread:.2f}%p로 좁아 작은 가정 변화에도 주당가치가 크게 흔들립니다.")
+    if g >= 2.2:
+        reasons.append(f"영구성장률 {g:.1f}%는 장기 GDP/물가 가정의 상단에 가까워 보수 검증이 필요합니다.")
+    if year5_growth > g + 1.0:
+        reasons.append(f"5년차 매출 성장률 {year5_growth:.1f}%가 영구성장률보다 {year5_growth - g:.1f}%p 높아 성장 둔화 속도를 확인해야 합니다.")
+    if year5_opm > latest_opm + 0.7:
+        reasons.append(f"5년차 OPM {year5_opm:.1f}%가 최근 4분기 중앙값 {latest_opm:.1f}%보다 높아 마진 정상화 근거가 필요합니다.")
+    if not reasons:
+        reasons.append("터미널가치 비중은 높지만 WACC-g와 장기 성장률 자체는 즉시 위험 구간은 아닙니다.")
+
+    def _calc_for(changes: dict) -> dict | None:
+        revised = {**assumptions, **changes}
+        try:
+            return calculate_dcf(kpis, revised, dcf["shares_outstanding"], dcf.get("net_debt", 0))
+        except Exception:
+            return None
+
+    base_price = dcf.get("implied_price")
+    base = {
+        "case": "현재 입력값",
+        "wacc": wacc,
+        "perpetual_growth": g,
+        "terminal_revenue_growth": year5_growth,
+        "terminal_opm": year5_opm,
+        "implied_price": base_price,
+        "action": "현재 DCF 결과입니다. 의사결정 기준값이라기보다 비교 출발점으로 봅니다.",
+    }
+
+    review_g = max(0.8, min(g, 2.0) - 0.3)
+    review_growth = min(year5_growth, review_g + 0.5)
+    review_opm = min(year5_opm, max(latest_opm, year5_opm - 0.3))
+    review_calc = _calc_for({
+        "perpetual_growth": review_g,
+        "revenue_growth_terminal": review_growth,
+        "opm_terminal": review_opm,
+        "erp": float(assumptions.get("erp", 6.0)) + 0.5,
+    })
+    review = {
+        "case": "권장 Base 보정",
+        "wacc": float((review_calc or {}).get("wacc") or wacc + 0.5),
+        "perpetual_growth": review_g,
+        "terminal_revenue_growth": review_growth,
+        "terminal_opm": review_opm,
+        "implied_price": (review_calc or {}).get("implied_price"),
+        "action": "발표/보고서의 기준 시나리오는 이 조합을 먼저 보세요. 성장률은 GDP 근처로 낮추고 할인율은 0.5%p 높여 과대평가를 눌러봅니다.",
+    }
+
+    stress_g = max(0.5, review_g - 0.5)
+    stress_growth = min(review_growth, stress_g + 0.3)
+    stress_opm = max(year5_opm - 0.8, latest_opm - 0.5)
+    stress_calc = _calc_for({
+        "perpetual_growth": stress_g,
+        "revenue_growth_terminal": stress_growth,
+        "opm_terminal": stress_opm,
+        "erp": float(assumptions.get("erp", 6.0)) + 1.0,
+    })
+    stress = {
+        "case": "하방 스트레스",
+        "wacc": float((stress_calc or {}).get("wacc") or wacc + 1.0),
+        "perpetual_growth": stress_g,
+        "terminal_revenue_growth": stress_growth,
+        "terminal_opm": stress_opm,
+        "implied_price": (stress_calc or {}).get("implied_price"),
+        "action": "주가 괴리가 큰 종목은 이 가격대까지 내려와도 투자 논리가 유지되는지 확인합니다. 여기서도 현재가보다 높아야 안전마진이 있습니다.",
+    }
+
+    rows = [base, review, stress]
+    for row in rows:
+        price = row.get("implied_price")
+        row["upside"] = (price / current_price - 1) * 100 if price and current_price else None
+        row["spread"] = row["wacc"] - row["perpetual_growth"]
+
+    return {
+        "headline": "터미널가치 비중이 높아 기준 시나리오를 바로 믿기보다 보수 조합을 먼저 확인해야 합니다.",
+        "diagnosis": " ".join(reasons),
+        "rows": rows,
+        "decision_rule": "Base 보정 가격이 현재가를 충분히 넘고, 하방 스트레스에서도 손상 폭이 제한적일 때만 DCF 상단을 투자 논리로 사용하세요.",
+    }
+
+
 def calculate_multiple_valuation(
     kpis: pd.DataFrame,
     shares_outstanding: float,
