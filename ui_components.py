@@ -88,6 +88,14 @@ def inject_css() -> None:
       .fs-nf-title {font-size:1.18rem;font-weight:800;color:#0B1F33;letter-spacing:-.02em;line-height:1.35;}
       .fs-nf-sub {font-size:.92rem;color:#667085;margin-top:8px;line-height:1.5;}
       div[data-testid="stDialog"] div[role="dialog"] {border-radius:16px;box-shadow:0 24px 60px rgba(11,31,51,.28);}
+      /* Full-screen loading overlay (centered, dimmed backdrop) */
+      .fs-overlay {position:fixed;inset:0;z-index:99990;background:rgba(11,31,51,.45);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;}
+      .fs-ov-card {background:#FFFFFF;border-radius:16px;padding:30px 38px 26px;box-shadow:0 24px 60px rgba(11,31,51,.32);text-align:center;max-width:410px;width:86%;}
+      .fs-spin {width:42px;height:42px;margin:0 auto 16px;border:4px solid #E6ECF3;border-top-color:#1D4E89;border-radius:50%;animation:fs-rot .8s linear infinite;}
+      @keyframes fs-rot {to {transform:rotate(360deg);}}
+      .fs-ov-title {font-size:1.18rem;font-weight:800;color:#0B1F33;letter-spacing:-.02em;}
+      .fs-ov-sub {font-size:.92rem;color:#475467;margin-top:9px;line-height:1.6;}
+      .fs-ov-eta {display:inline-block;margin-top:15px;font-size:.78rem;font-weight:700;color:#1D4E89;background:#EFF4FB;border:1px solid #DCE7F5;border-radius:999px;padding:4px 13px;}
       /* Slim top bar (analysis pages + landing option A) */
       .fs-bar {display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #D7DEE7;padding:2px 0 12px;margin-bottom:20px;gap:20px;}
       .fs-bar-brand {font-size:1.5rem;font-weight:800;letter-spacing:-.045em;color:#0B1F33;line-height:1;}

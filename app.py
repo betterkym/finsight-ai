@@ -129,6 +129,17 @@ def _load_suggestions(query: str) -> list[dict]:
         return []
 
 
+_LOADING_HTML = (
+    "<div class='fs-overlay'><div class='fs-ov-card'>"
+    "<div class='fs-spin'></div>"
+    "<div class='fs-ov-title'>분석을 준비하고 있어요</div>"
+    "<div class='fs-ov-sub'>DART 분기 재무·공시를 수집하고, 계정을 검증한 뒤 동종기업과 "
+    "교차검증할 준비를 하고 있습니다. 정확한 분석을 위해 데이터를 꼼꼼히 맞춰보는 중이에요 — 잠시만 기다려 주세요.</div>"
+    "<div class='fs-ov-eta'>예상 소요 10~20초</div>"
+    "</div></div>"
+)
+
+
 @st.dialog("기업 검색")
 def _suggestion_dialog(query: str, suggestions: list[dict]) -> None:
     """Centered modal (dimmed backdrop) that surfaces close-name candidates."""
@@ -602,22 +613,25 @@ if analyze or st.session_state.pop("auto_run", False):
         _clear_analysis()
         st.error("기업명을 입력해 주세요.")
     else:
+        loading = st.empty()
+        loading.markdown(_LOADING_HTML, unsafe_allow_html=True)
         try:
-            with st.spinner("분기 재무 수집 · 계정 검증 · 동종기업 비교 준비 중…"):
-                loaded = _load_company(company_input.strip(), quarters_input)
-                resolved = str(loaded.iloc[-1].get("company", company_input.strip()))
-                resolved_peer_rec = recommend_peers(resolved, limit=2)
-                peer_candidates = resolved_peer_rec["peers"] if auto_peers else selected_peers
-                peers = tuple(name for name in peer_candidates if name != resolved)
-                st.session_state.update({
-                    "kpis": loaded, "peers": _load_peers(peers, quarters_input), "company": resolved,
-                    "quarters": quarters_input, "peer_selection": list(peers),
-                    "peer_method": resolved_peer_rec["method"] if auto_peers else "User selected",
-                    "context": _load_context(resolved, str(loaded.iloc[-1].get("stock_code", ""))),
-                })
-                for key in ("dcf", "dcf_is_auto", "dcf_version"):
-                    st.session_state.pop(key, None)
+            loaded = _load_company(company_input.strip(), quarters_input)
+            resolved = str(loaded.iloc[-1].get("company", company_input.strip()))
+            resolved_peer_rec = recommend_peers(resolved, limit=2)
+            peer_candidates = resolved_peer_rec["peers"] if auto_peers else selected_peers
+            peers = tuple(name for name in peer_candidates if name != resolved)
+            st.session_state.update({
+                "kpis": loaded, "peers": _load_peers(peers, quarters_input), "company": resolved,
+                "quarters": quarters_input, "peer_selection": list(peers),
+                "peer_method": resolved_peer_rec["method"] if auto_peers else "User selected",
+                "context": _load_context(resolved, str(loaded.iloc[-1].get("stock_code", ""))),
+            })
+            for key in ("dcf", "dcf_is_auto", "dcf_version"):
+                st.session_state.pop(key, None)
+            loading.empty()
         except Exception as exc:
+            loading.empty()
             _clear_analysis()
             query = company_input.strip()
             suggestions = _load_suggestions(query) if "찾지 못" in str(exc) else []
