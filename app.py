@@ -120,7 +120,11 @@ with st.sidebar:
     st.caption("DART Filing Analysis Workbench")
     st.divider()
     company_input = st.text_input("기업명 또는 종목코드", value="농심")
-    quarters_input = st.radio("조회 기간", [8, 12], horizontal=True, format_func=lambda x: f"{x}개 분기")
+    quarters_input = st.select_slider(
+        "조회 기간", options=[8, 12, 16, 20, 24], value=12,
+        format_func=lambda x: f"{x}개 분기 · {x // 4}년" + (" (권장)" if x == 12 else ""),
+    )
+    st.caption("권장 12분기(3년) — YoY 2회·추세·이상탐지 baseline의 균형점. 길수록 baseline은 안정적이나 옛 분기는 DART 계정 매핑 변화로 결측이 늘 수 있습니다.")
     peer_rec = recommend_peers(company_input, limit=2)
     auto_peers = st.checkbox("동종기업 자동 추천", value=True)
     if auto_peers:
