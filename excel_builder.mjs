@@ -79,19 +79,49 @@ cover.getRange(`K10:L${9 + Math.max(methodRows.length,1)}`).format.numberFormat 
 const valueChart = cover.charts.add("bar", cover.getRange(`J9:L${9 + Math.max(methodRows.length,1)}`)); valueChart.title = "방법별 적정가 vs 현재가 (원)"; valueChart.hasLegend = true; valueChart.yAxis = { numberFormatCode: "#,##0" }; valueChart.setPosition("H13", "N27");
 widths(cover,{A:12,B:19,C:18,D:42,E:42,F:15,G:14,H:16,J:20,K:16,L:16,M:12,N:12}); cover.freezePanes.freezeRows(4);
 
-// 01 Quarterly
+// 01 Quarterly (전치: 분기를 열로, 항목을 행으로 — 애널리스트 표준 시계열 레이아웃)
 const quarterly = wb.worksheets.add("01 Quarterly");
-title(quarterly, `${data.company} | 분기 실적`, "DART 연결재무제표 우선 · 단위 억원 · 결측 임의보정 없음", "Z");
-section(quarterly, "A4:Z4", "과거 실적과 영업 동인");
-const qHeaders = ["분기","매출","QoQ","YoY","영업이익","OPM","순이익","CFO","CFO 마진","D&A","CAPEX","FCF","FCF 마진","원가율","판관비율","매출채권","재고","매입채무","운전자본","NWC/매출","ΔNWC","매출채권회전일","재고회전일","매입채무회전일","유동비율","부채비율"];
-quarterly.getRange("A5:Z5").values = [qHeaders]; header(quarterly,"A5:Z5");
-const qRows = data.quarterly.map(x => [x.period,won100m(x.revenue),pct(x.revenue_qoq),pct(x.revenue_yoy),won100m(x.operating_profit),pct(x.opm),won100m(x.net_income),won100m(x.cfo),pct(x.cfo_margin),won100m(x.depreciation),won100m(x.capex),won100m(x.fcf),pct(x.fcf_margin),pct(x.cogs_ratio),pct(x.sga_ratio),won100m(x.receivables),won100m(x.inventory),won100m(x.payables),won100m(x.working_capital),pct(x.working_capital_ratio),won100m(x.change_in_nwc),safe(x.ar_days),safe(x.inventory_days),safe(x.payable_days),pct(x.current_ratio),pct(x.debt_ratio)]);
-quarterly.getRange(`A6:Z${5+qRows.length}`).values=qRows; tableBody(quarterly,`A6:Z${5+qRows.length}`);
-for(const col of ["B","E","G","H","J","K","L","P","Q","R","S","U"]) quarterly.getRange(`${col}6:${col}${5+qRows.length}`).format.numberFormat=amountFmt;
-for(const col of ["C","D","F","I","M","N","O","T","Y","Z"]) quarterly.getRange(`${col}6:${col}${5+qRows.length}`).format.numberFormat=pctFmt;
-quarterly.getRange(`V6:X${5+qRows.length}`).format.numberFormat="0.0";
-quarterly.getRange(`C6:D${5+qRows.length}`).conditionalFormats.add("colorScale",{colors:[C.redBg,C.white,C.greenBg],thresholds:["min","50%","max"]});
-quarterly.freezePanes.freezeRows(5); quarterly.freezePanes.freezeColumns(1); widths(quarterly,{A:13,B:14,C:9,D:9,E:16,F:9,G:14,H:14,I:11,J:12,K:12,L:13,M:11,N:10,O:10,P:14,Q:14,R:14,S:15,T:12,U:13,V:10,W:12,X:11,Y:11,Z:11});
+const qN = data.quarterly.length;
+const qLast = String.fromCharCode(64 + 1 + qN); // A=항목, B.. = 분기 (분기 수 ≤ 24 → 최대 Y열)
+title(quarterly, `${data.company} | 분기 실적`, "DART 연결재무제표 우선 · 단위 억원 · 결측 임의보정 없음", qLast);
+section(quarterly, `A4:${qLast}4`, "과거 실적과 영업 동인");
+const qMetrics = [
+  ["매출", x=>won100m(x.revenue), amountFmt],
+  ["QoQ", x=>pct(x.revenue_qoq), pctFmt],
+  ["YoY", x=>pct(x.revenue_yoy), pctFmt],
+  ["영업이익", x=>won100m(x.operating_profit), amountFmt],
+  ["OPM", x=>pct(x.opm), pctFmt],
+  ["순이익", x=>won100m(x.net_income), amountFmt],
+  ["CFO", x=>won100m(x.cfo), amountFmt],
+  ["CFO 마진", x=>pct(x.cfo_margin), pctFmt],
+  ["D&A", x=>won100m(x.depreciation), amountFmt],
+  ["CAPEX", x=>won100m(x.capex), amountFmt],
+  ["FCF", x=>won100m(x.fcf), amountFmt],
+  ["FCF 마진", x=>pct(x.fcf_margin), pctFmt],
+  ["원가율", x=>pct(x.cogs_ratio), pctFmt],
+  ["판관비율", x=>pct(x.sga_ratio), pctFmt],
+  ["매출채권", x=>won100m(x.receivables), amountFmt],
+  ["재고", x=>won100m(x.inventory), amountFmt],
+  ["매입채무", x=>won100m(x.payables), amountFmt],
+  ["운전자본", x=>won100m(x.working_capital), amountFmt],
+  ["NWC/매출", x=>pct(x.working_capital_ratio), pctFmt],
+  ["ΔNWC", x=>won100m(x.change_in_nwc), amountFmt],
+  ["매출채권회전일", x=>safe(x.ar_days), "0.0"],
+  ["재고회전일", x=>safe(x.inventory_days), "0.0"],
+  ["매입채무회전일", x=>safe(x.payable_days), "0.0"],
+  ["유동비율", x=>pct(x.current_ratio), pctFmt],
+  ["부채비율", x=>pct(x.debt_ratio), pctFmt],
+];
+quarterly.getRange(`A5:${qLast}5`).values=[["항목", ...data.quarterly.map(x=>x.period)]]; header(quarterly,`A5:${qLast}5`);
+const qBody = qMetrics.map(([label, fn]) => [label, ...data.quarterly.map(fn)]);
+quarterly.getRange(`A6:${qLast}${5+qMetrics.length}`).values=qBody; tableBody(quarterly,`A6:${qLast}${5+qMetrics.length}`);
+qMetrics.forEach(([label, fn, fmt], i) => { quarterly.getRange(`B${6+i}:${qLast}${6+i}`).format.numberFormat=fmt; });
+quarterly.getRange(`A6:A${5+qMetrics.length}`).format.font={bold:true,color:C.navy};
+quarterly.getRange(`A6:A${5+qMetrics.length}`).format.fill=C.pale;
+quarterly.getRange(`B7:${qLast}8`).conditionalFormats.add("colorScale",{colors:[C.redBg,C.white,C.greenBg],thresholds:["min","50%","max"]});
+quarterly.freezePanes.freezeRows(5); quarterly.freezePanes.freezeColumns(1);
+quarterly.getRange("A:A").format.columnWidth=16;
+for(let c=2;c<=1+qN;c++) quarterly.getRange(`${String.fromCharCode(64+c)}:${String.fromCharCode(64+c)}`).format.columnWidth=12;
 
 // 02 Earnings Bridge
 const earnings = wb.worksheets.add("02 Earnings Bridge");

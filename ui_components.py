@@ -91,18 +91,18 @@ def inject_css() -> None:
       .fs-hero-lead {font-size:1.92rem;line-height:1.26;font-weight:800;letter-spacing:-.035em;color:#0B1F33;max-width:900px;}
       .fs-hero-lead em {font-style:normal;color:#1D4E89;}
       .fs-hero-sub {margin-top:14px;font-size:1.0rem;line-height:1.62;color:#475467;max-width:780px;}
-      .fs-cap {font-size:.66rem;letter-spacing:.16em;text-transform:uppercase;color:#94A3B8;font-weight:800;margin:30px 0 10px;}
+      .fs-cap {font-size:.74rem;letter-spacing:.16em;text-transform:uppercase;color:#94A3B8;font-weight:800;margin:30px 0 10px;}
       .fs-feature-grid {display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
       .fs-feature {background:#FFFFFF;border:1px solid #E2E8F0;border-top:3px solid #1D4E89;border-radius:9px;padding:18px 18px 20px;box-shadow:0 1px 3px rgba(16,24,40,.05);transition:transform .16s ease,box-shadow .16s ease;}
       .fs-feature:hover {transform:translateY(-3px);box-shadow:0 10px 24px rgba(16,24,40,.10);}
       .fs-feature-k {font-size:.68rem;font-weight:800;letter-spacing:.14em;color:#1D4E89;}
-      .fs-feature-t {font-size:1.05rem;font-weight:800;color:#143257;margin:9px 0 7px;letter-spacing:-.01em;}
-      .fs-feature-d {font-size:.86rem;line-height:1.56;color:#475467;}
+      .fs-feature-t {font-size:1.12rem;font-weight:800;color:#143257;margin:9px 0 7px;letter-spacing:-.01em;}
+      .fs-feature-d {font-size:.91rem;line-height:1.56;color:#475467;}
       .fs-usecases {display:grid;grid-template-columns:repeat(3,1fr);border:1px solid #E2E8F0;border-radius:9px;overflow:hidden;background:#FFFFFF;}
       .fs-usecase {padding:16px 18px;border-right:1px solid #EEF2F6;}
       .fs-usecase:last-child {border-right:none;}
-      .fs-usecase-h {font-size:.82rem;font-weight:800;color:#1D4E89;letter-spacing:-.01em;}
-      .fs-usecase-d {font-size:.86rem;color:#475467;line-height:1.52;margin-top:5px;}
+      .fs-usecase-h {font-size:.9rem;font-weight:800;color:#1D4E89;letter-spacing:-.01em;}
+      .fs-usecase-d {font-size:.91rem;color:#475467;line-height:1.52;margin-top:5px;}
       .fs-cta {display:flex;align-items:center;gap:14px;margin-top:22px;padding:16px 20px;background:linear-gradient(90deg,#0F2238,#173B57);border-radius:9px;color:#DCEAF7;font-size:.96rem;line-height:1.5;}
       .fs-cta b {color:#FFFFFF;}
       .fs-cta-arrow {font-size:1.35rem;color:#7FB0E6;flex:none;}
