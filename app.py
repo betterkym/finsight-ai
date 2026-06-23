@@ -674,16 +674,29 @@ html_report = generate_analysis_html_report(
     market_context=context,
     external_dcf_adjustments=external_dcf_adjustments,
 )
+excel = export_excel(
+    company, kpis, margin_bridge, dcf, recommendations, quality, export_anomalies, capital,
+    scan=scan, peer_benchmark=peer_benchmark, dcf_evidence=dcf_bridge,
+    peer_names=st.session_state.get("peer_selection", []),
+    thesis=thesis, market_context=context, multiple_valuation=multiple_valuation,
+    valuation_range=valuation_range, research_reference=research,
+    structured=structured, price_action=price_action, interpreted=interpreted,
+    tracker_commentary=tracker_commentary,
+)
+
+ab_msg, ab_html, ab_xlsx = st.columns([2.2, 1, 1])
+ab_msg.caption("📌 발간 리포트·Excel 워크북은 어느 탭에서나 이 자리에서 바로 내려받을 수 있습니다.")
+ab_html.download_button("📄 HTML 리포트", html_report.encode("utf-8"), file_name=f"FinSight_{company}_Investment_Note.html", mime="text/html", type="primary", width="stretch")
+ab_xlsx.download_button("📊 Excel 워크북", excel, file_name=f"FinSight_{company}_Analyst_Workbook.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
+st.divider()
 
 report_tab, brief_tab, tracker_tab, diagnostic_tab, peer_tab, dcf_tab, export_tab = st.tabs(
-    ["01 리포트", "02 투자판단", "03 실적 트래커", "04 이상 탐지·원인", "05 동종기업 검증", "06 가치평가", "07 Excel·근거"]
+    ["01 리포트", "02 투자판단", "03 실적 트래커", "04 이상 탐지·원인", "05 동종기업 검증", "06 가치평가", "07 근거·출처"]
 )
 
 with report_tab:
     render_tab_intro("발간 투자 리포트", "실적·밸류에이션·수급·리스크를 한 장의 발간형 리포트로 정리합니다.", "투자의견 · 산정가치 · 차트 · 체크포인트")
-    rc1, rc2 = st.columns(2)
-    rc1.download_button("HTML 리포트 다운로드", html_report.encode("utf-8"), file_name=f"FinSight_{company}_Investment_Note.html", mime="text/html", type="primary", width="stretch")
-    rc2.caption("브라우저에서 열어 인쇄(⌘P) → PDF로 저장하면 발간용 PDF가 됩니다.")
+    st.caption("상단 📄 버튼으로 HTML을 받아 브라우저에서 인쇄(⌘P) → PDF로 저장하면 발간용 PDF가 됩니다.")
     components.html(html_report, height=2200, scrolling=True)
 
 with brief_tab:
@@ -967,18 +980,10 @@ with dcf_tab:
         st.error(st.session_state["dcf_error"])
 
 with export_tab:
-    render_tab_intro("Excel과 근거 패키지", "웹에서 찾은 이슈와 가정을 모델 작업으로 넘기고 출처·결측·검증 상태를 보존합니다.", "Summary · Quarterly · Diagnostics · Peers · DCF · Checks/Sources")
+    render_tab_intro("근거·출처 전수", "이 분석이 어떤 데이터·공시·뉴스·검증을 거쳤는지 모두 펼쳐 신뢰도를 점검합니다.", "데이터 커버리지 · 외부연결 상태 · 공시·뉴스 원문 · 결측 점검")
     if has_blocking_gaps(quality):
-        st.warning("매출액 또는 영업이익 결측이 있습니다. Excel Checks 시트를 먼저 확인하세요.")
-    excel = export_excel(
-        company, kpis, margin_bridge, dcf, recommendations, quality, export_anomalies, capital,
-        scan=scan, peer_benchmark=peer_benchmark, dcf_evidence=dcf_bridge,
-        peer_names=st.session_state.get("peer_selection", []),
-        thesis=thesis, market_context=context, multiple_valuation=multiple_valuation,
-        valuation_range=valuation_range, research_reference=research,
-        structured=structured, price_action=price_action, interpreted=interpreted,
-        tracker_commentary=tracker_commentary,
-    )
+        st.warning("매출액 또는 영업이익 결측이 있습니다. 상단 Excel의 Checks 시트를 먼저 확인하세요.")
+    st.markdown("#### 데이터 커버리지")
     coverage = pd.DataFrame([
         {"근거 계층": "DART 재무", "상태": "Connected", "내용": f"{len(kpis)}개 분기"},
         {"근거 계층": "DART 공시", "상태": "Connected" if context.get("disclosures") else "Unavailable", "내용": f"{len(context.get('disclosures', []))}건"},
@@ -991,6 +996,30 @@ with export_tab:
         {"근거 계층": "동종기업", "상태": "Connected" if peer_kpis else "Unavailable", "내용": f"{len(peer_kpis)}개사"},
     ])
     st.dataframe(coverage, width="stretch", hide_index=True)
-    c1, c2 = st.columns(2)
-    c1.download_button("Analyst Workbook 다운로드", excel, file_name=f"FinSight_{company}_Analyst_Workbook.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", width="stretch")
-    c2.download_button("브라우저용 HTML 리포트 다운로드", html_report.encode("utf-8"), file_name=f"FinSight_{company}_Investment_Note.html", mime="text/html", width="stretch")
+
+    driver_rows = (context.get("external_drivers") or {}).get("status_rows", [])
+    if driver_rows:
+        st.markdown("#### 외부 연결 상태 — 수급·원가·무역·매크로")
+        st.dataframe(
+            pd.DataFrame(driver_rows).rename(columns={
+                "source": "데이터", "status": "상태", "detail": "현재 의미",
+                "action": "서비스 내 사용처", "evidence_level": "근거 등급",
+            })[["데이터", "상태", "현재 의미", "서비스 내 사용처", "근거 등급"]],
+            width="stretch", hide_index=True,
+            column_config={
+                "현재 의미": st.column_config.TextColumn("현재 의미", width="medium"),
+                "서비스 내 사용처": st.column_config.TextColumn("서비스 내 사용처", width="medium"),
+            },
+        )
+
+    src_items = (
+        [{"유형": "DART 공시", **d} for d in context.get("disclosures", [])]
+        + [{"유형": "뉴스", **n} for n in context.get("news", [])]
+        + [{"유형": "블로그", **b} for b in context.get("blogs", [])]
+    )
+    if src_items:
+        with st.expander(f"공시·뉴스 원문 ({len(src_items)}건) — 클릭해 출처 확인", expanded=False):
+            render_context_items(src_items)
+
+    st.markdown("#### 데이터 품질·결측 점검")
+    render_quality(quality)
