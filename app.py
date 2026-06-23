@@ -847,8 +847,21 @@ with tracker_tab:
 
 with diagnostic_tab:
     render_tab_intro("전 항목 이상 탐지와 원인 추적", "정상 항목까지 전수 스캔하고 자체 과거 범위를 벗어난 항목만 깊게 검증합니다.", "자체 과거 · DART 내부 답 · peer 판정 · 외부 정황 · DCF 연결")
-    scan_df = pd.DataFrame([{"영역": x["area"], "지표": x["label"], "현재": x["value"], "과거 중앙값": x["baseline"], "편차": x["deviation"], "판정": x["status"], "근거": x["reason"]} for x in scan])
-    st.dataframe(scan_df.style.format({"현재": "{:.1f}", "과거 중앙값": "{:.1f}", "편차": "{:+.1f}"}, na_rep="N/A"), width="stretch", hide_index=True)
+    _status_label = {"Abnormal": "🔴 이상", "Needs Review": "🟡 검토 필요", "Normal": "정상"}
+    scan_df = pd.DataFrame([{"영역": x["area"], "지표": x["label"], "현재": x["value"], "과거 중앙값": x["baseline"], "편차": x["deviation"], "판정": _status_label.get(x["status"], x["status"]), "근거": x["reason"]} for x in scan])
+
+    def _scan_row_style(row):
+        verdict = str(row["판정"])
+        if "이상" in verdict:
+            return ["background-color:#FEF2F2;color:#B42318;font-weight:700"] * len(row)
+        if "검토" in verdict:
+            return ["background-color:#FFFAEB;color:#9A6700"] * len(row)
+        return [""] * len(row)
+
+    st.dataframe(
+        scan_df.style.format({"현재": "{:.1f}", "과거 중앙값": "{:.1f}", "편차": "{:+.1f}"}, na_rep="N/A").apply(_scan_row_style, axis=1),
+        width="stretch", hide_index=True,
+    )
     st.markdown("#### 우선 검토 이슈 · 원인 해석")
     if not interpreted:
         st.success("설정된 절대 기준과 자체 과거 범위에서 우선 검토할 이상 항목이 없습니다.")
