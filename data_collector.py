@@ -98,6 +98,7 @@ def _dart_get(endpoint: str, **params) -> dict:
 
 
 @lru_cache(maxsize=1)
+@lru_cache(maxsize=1)
 def _corp_codes() -> dict[str, dict[str, str]]:
     if not DART_API_KEY:
         return {}
@@ -136,11 +137,73 @@ def resolve_company(company: str) -> dict[str, str]:
         return {"company": company, **codes[company]}
     matches = [(name, value) for name, value in codes.items() if company in name]
     listed = [(name, value) for name, value in matches if value.get("stock_code")]
-    pool = listed or matches
-    if not pool:
+    # 분석에는 상장 종목코드가 필요하므로, 상장 부분일치가 없으면 not-found로 처리해
+    # 상위 UI가 유사 후보를 제안(혹시 이걸 찾으셨나요?)하도록 한다.
+    if not listed:
         raise ValueError(f"DART에서 '{company}'을(를) 찾지 못했습니다.")
-    name, value = sorted(pool, key=lambda item: len(item[0]))[0]
+    name, value = sorted(listed, key=lambda item: len(item[0]))[0]
     return {"company": name, **value}
+
+
+def suggest_companies(query: str, limit: int = 6) -> list[dict]:
+    """Return close company-name candidates for a query that didn't resolve exactly.
+
+    Handles substring, normalized (space/case-insensitive) and fuzzy (typo) matches so the
+    UI can ask '혹시 이걸 찾으셨나요?' instead of a hard 'not found'. Listed names are preferred.
+    """
+    import difflib
+
+    query = (query or "").strip()
+    if not query:
+        return []
+    try:
+        codes = _corp_codes()
+    except Exception:
+        return []
+    if not codes:
+        return []
+
+    # Common Hangul↔Latin brand spellings so 엘지전자 surfaces LG전자, 에스케이 → SK 등.
+    aliases = {"엘지": "lg", "에스케이": "sk", "케이티": "kt", "지에스": "gs", "씨제이": "cj",
+               "케이비": "kb", "에이치디": "hd", "현대차": "현대자동차", "기아차": "기아"}
+
+    def norm(value: str) -> str:
+        v = value.replace(" ", "").replace("(주)", "").replace("주식회사", "").lower()
+        for hangul, latin in aliases.items():
+            v = v.replace(hangul, latin)
+        return v
+
+    q = norm(query)
+    if not q:
+        return []
+    grams = {q[i:i + 2] for i in range(len(q) - 1)} or {q}
+    scored: list[tuple[float, str, str]] = []
+    for name, value in codes.items():
+        stock_code = value.get("stock_code", "")
+        if not stock_code:  # 분석에는 상장 종목코드가 필요 — 상장사만 후보로 제시
+            continue
+        n = norm(name)
+        if len(n) < 2:
+            continue
+        if q in n or n in q:
+            score = 0.95 if q in n else 0.78
+        elif n[0] == q[0] or any(gram in n for gram in grams):
+            score = difflib.SequenceMatcher(None, q, n).ratio()
+        else:
+            continue
+        if score >= 0.5:
+            scored.append((score, name, stock_code))
+
+    scored.sort(key=lambda item: (-item[0], len(item[1])))
+    out, seen = [], set()
+    for _score, name, stock_code in scored:
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append({"name": name, "stock_code": stock_code, "listed": True})
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _matches(row: pd.Series, aliases: tuple[str, ...]) -> bool:

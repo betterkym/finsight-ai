@@ -11,6 +11,7 @@ from data_collector import (
     get_external_driver_snapshot, get_external_news_context, get_macro_snapshot, get_major_shareholding_changes,
     get_market_beta, get_market_snapshot, get_peer_beta_inputs, get_peer_financials,
     get_quarterly_financials, get_recent_disclosures, get_sga_breakdown, recommend_peers,
+    suggest_companies,
 )
 from diagnostics import (
     build_terminal_value_guidance, build_valuation_range, calculate_dcf,
@@ -116,6 +117,20 @@ def _fmt(value, suffix="", digits=1) -> str:
 def _clear_analysis() -> None:
     for key in ("kpis", "peers", "company", "quarters", "peer_selection", "peer_method", "context", "dcf", "dcf_is_auto", "dcf_version"):
         st.session_state.pop(key, None)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_suggestions(query: str) -> list[dict]:
+    try:
+        return suggest_companies(query, limit=6)
+    except Exception:
+        return []
+
+
+def _pick_company(name: str) -> None:
+    """'혹시 이걸 찾으셨나요?' 후보 클릭 → 그 기업명으로 입력칸을 채우고 즉시 재분석."""
+    st.session_state["company_query"] = name
+    st.session_state["auto_run"] = True
 
 
 def _tracker_style(frame: pd.DataFrame):
@@ -534,7 +549,8 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.divider()
-    company_input = st.text_input("기업명 또는 종목코드", value="농심")
+    st.session_state.setdefault("company_query", "농심")
+    company_input = st.text_input("기업명 또는 종목코드", key="company_query")
     quarters_input = st.select_slider(
         "조회 기간", options=[8, 12, 16, 20, 24], value=12,
         format_func=lambda x: f"{x}개 분기 · {x // 4}년" + (" (권장)" if x == 12 else ""),
@@ -556,7 +572,7 @@ with st.sidebar:
     st.divider()
     render_process_steps()
 
-if analyze:
+if analyze or st.session_state.pop("auto_run", False):
     if not company_input.strip():
         _clear_analysis()
         st.error("기업명을 입력해 주세요.")
@@ -578,7 +594,17 @@ if analyze:
                     st.session_state.pop(key, None)
         except Exception as exc:
             _clear_analysis()
-            st.error(f"분석을 시작하지 못했습니다: {exc}")
+            query = company_input.strip()
+            suggestions = _load_suggestions(query) if "찾지 못" in str(exc) else []
+            if suggestions:
+                st.warning(f"‘{query}’ 을(를) 정확히 찾지 못했어요. 혹시 이걸 찾으셨나요?")
+                cols = st.columns(min(len(suggestions), 3))
+                for idx, item in enumerate(suggestions):
+                    label = f"{item['name']}" + (f"  ·  {item['stock_code']}" if item.get("stock_code") else "")
+                    cols[idx % len(cols)].button(label, key=f"suggest_{idx}", on_click=_pick_company, args=(item["name"],), width="stretch")
+                st.caption("후보를 누르면 바로 분석됩니다. 정식 명칭(예: LG전자)이나 6자리 종목코드로도 검색돼요.")
+            else:
+                st.error(f"분석을 시작하지 못했습니다: {exc}")
 
 render_header(slim=True)
 
