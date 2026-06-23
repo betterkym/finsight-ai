@@ -6,6 +6,9 @@ __pycache__/
 *.db
 *.sqlite
 .streamlit/secrets.toml
+.streamlit/credentials.toml
 venv/
 .venv/
 tmp/
+.matplotlib-cache/
+outputs/
