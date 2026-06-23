@@ -334,11 +334,13 @@ causal.getRange("A8:D8").values=[["Driver","Weight","Reading","Evidence / Level"
 const attrRows=(pa.attribution||[]).map(a=>[a.driver,a.weight,a.reading,`${a.evidence||""} · ${a.evidence_level||""}`]);
 causal.getRange(`A9:D${8+Math.max(attrRows.length,1)}`).values=attrRows.length?attrRows:[["No attribution",null,null,null]]; tableBody(causal,`A9:D${8+Math.max(attrRows.length,1)}`);
 const aEnd=8+Math.max(attrRows.length,1);
-section(causal,`A${aEnd+2}:H${aEnd+2}`,"Abnormal Signal — Sourced Cause");
-causal.getRange(`A${aEnd+3}:F${aEnd+3}`).values=[["Signal","Reading (why, not just what)","Top Cause","Evidence Level","Confidence","Falsifier"]]; header(causal,`A${aEnd+3}:F${aEnd+3}`);
-const ir=(data.interpreted||[]).map(it=>{const I=it.interpretation||{};const top=(I.cause_candidates||[])[0]||{};return [it.label,I.narrative,top.cause||"근거 대기",top.evidence_level||"—",I.confidence||"",I.falsifier||""];});
-causal.getRange(`A${aEnd+4}:F${aEnd+3+Math.max(ir.length,1)}`).values=ir.length?ir:[["No abnormal signal","자체 과거 범위 내 정상","—","—","—","—"]]; tableBody(causal,`A${aEnd+4}:F${aEnd+3+Math.max(ir.length,1)}`);
-widths(causal,{A:24,B:60,C:34,D:14,E:13,F:40,G:12,H:12}); causal.freezePanes.freezeRows(4);
+section(causal,`A${aEnd+2}:H${aEnd+2}`,"Abnormal Signal — Sourced Cause & Verification Recipe");
+causal.getRange(`A${aEnd+3}:G${aEnd+3}`).values=[["Signal","Reading (why, not just what)","Top Cause","Evidence","Confidence","Verify — 어디서 → 무엇을 → 판정","Falsifier"]]; header(causal,`A${aEnd+3}:G${aEnd+3}`);
+const recipeText=I=>(I.verification||[]).map((r,i)=>`${i+1}. [어디서] ${r.where}\n   [무엇을] ${r.what}\n   [판정] ${r.rule}`).join("\n\n");
+const ir=(data.interpreted||[]).map(it=>{const I=it.interpretation||{};const top=(I.cause_candidates||[])[0]||{};return [it.label,I.narrative,top.cause||"근거 대기",top.evidence_level||"—",I.confidence||"",recipeText(I),I.falsifier||""];});
+causal.getRange(`A${aEnd+4}:G${aEnd+3+Math.max(ir.length,1)}`).values=ir.length?ir:[["No abnormal signal","자체 과거 범위 내 정상","—","—","—","—","—"]]; tableBody(causal,`A${aEnd+4}:G${aEnd+3+Math.max(ir.length,1)}`);
+causal.getRange(`F${aEnd+4}:F${aEnd+3+Math.max(ir.length,1)}`).format={wrapText:true,verticalAlignment:"top",font:{size:9}};
+widths(causal,{A:22,B:52,C:30,D:13,E:12,F:64,G:38,H:12}); causal.freezePanes.freezeRows(4);
 
 if(previewDir){
   await fs.mkdir(previewDir,{recursive:true});

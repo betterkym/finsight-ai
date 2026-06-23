@@ -64,6 +64,13 @@ def inject_css() -> None:
       .fs-attr-driver {font-weight:700;color:#143257;background:#F8FAFC;}
       .fs-attr-read {color:#344054;font-size:.9rem;line-height:1.5;}
       .fs-attr-ev {font-size:.74rem;color:#64748B;margin-top:4px;}
+      .fs-recipe {border:1px solid #E2E8F0;border-radius:8px;overflow:hidden;background:#fff;}
+      .fs-recipe-row {display:flex;gap:0;border-bottom:1px solid #EEF2F6;}
+      .fs-recipe-row:last-child {border-bottom:none;}
+      .fs-recipe-n {width:34px;flex:none;display:flex;align-items:flex-start;justify-content:center;padding-top:11px;font-weight:800;color:#1D4E89;background:#F8FAFC;}
+      .fs-recipe-body {padding:9px 14px;font-size:.86rem;color:#344054;line-height:1.5;display:flex;flex-direction:column;gap:3px;}
+      .fs-recipe-tag {display:inline-block;min-width:46px;font-size:.66rem;font-weight:800;color:#475569;background:#EEF2F6;border-radius:3px;padding:1px 6px;margin-right:8px;text-align:center;letter-spacing:.02em;}
+      .fs-recipe-rule {color:#9A3412;background:#FFF7ED;}
       h1,h2,h3,h4 {letter-spacing:-.02em;}
       .stDataFrame {border:1px solid #E2E8F0;border-radius:6px;}
       footer {visibility:hidden;} #MainMenu {visibility:hidden;}
@@ -132,6 +139,19 @@ def render_interpretation(item: dict, fmt) -> None:
         blocks.append('<div class="fs-rail" style="color:#B45309;">키워드가 매칭된 공시·뉴스·리서치 근거가 없어 사업 원인을 확정하지 않습니다.</div>')
     blocks.append('</div>')
     st.markdown("".join(blocks), unsafe_allow_html=True)
+    st.markdown('<div class="fs-rail" style="font-weight:700;margin:10px 0 4px;">검증 레시피 · 어디서 → 무엇을 → 판정</div>', unsafe_allow_html=True)
+    recipe_html = ['<div class="fs-recipe">']
+    for i, r in enumerate(interp.get("verification", []), 1):
+        recipe_html.append(
+            f'<div class="fs-recipe-row"><div class="fs-recipe-n">{i}</div>'
+            f'<div class="fs-recipe-body">'
+            f'<div><span class="fs-recipe-tag">어디서</span>{_esc(r.get("where"))}</div>'
+            f'<div><span class="fs-recipe-tag">무엇을</span>{_esc(r.get("what"))}</div>'
+            f'<div><span class="fs-recipe-tag fs-recipe-rule">판정</span>{_esc(r.get("rule"))}</div>'
+            f'</div></div>'
+        )
+    recipe_html.append("</div>")
+    st.markdown("".join(recipe_html), unsafe_allow_html=True)
     cols = st.columns([3, 2])
     with cols[0]:
         st.markdown("**DART 본표가 답한 부분 (메커니즘)**")
@@ -139,10 +159,8 @@ def render_interpretation(item: dict, fmt) -> None:
         for ev in item.get("dart_evidence", []):
             st.caption(f"• {ev}")
     with cols[1]:
-        st.markdown("**확인 포인트 · 반증 조건**")
-        for w in interp.get("watch_points", [])[:3]:
-            st.caption(f"☐ {w}")
-        st.caption(f"⛔ 반증: {interp.get('falsifier','')}")
+        st.markdown("**반증 조건**")
+        st.caption(f"⛔ {interp.get('falsifier','')}")
 
 
 def render_header() -> None:

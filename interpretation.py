@@ -178,25 +178,21 @@ def interpret_signal(item: dict, context_pool: list[dict], research: dict, marke
     move = ""
     if value is not None and baseline is not None and unit:
         gap = value - baseline
-        move = f"{item['label']}이 {value:.1f}{unit}로 자체 과거 중앙값({baseline:.1f}{unit}) 대비 {gap:+.1f}{unit} {direction}했습니다. "
+        move = f"{item['label']}이 {value:.1f}{unit}로 과거 중앙값({baseline:.1f}{unit})보다 {gap:+.1f}{unit} {direction}했습니다. "
     mechanism = spec.get("mechanism", "")
     mech_answer = item.get("dart_answer", "")
     if candidates:
         top = candidates[0]
-        bridge = (
-            f"숫자만으로는 여기서 멈추지만, {top['source']}({top['evidence_level']})는 "
-            f"이 움직임을 「{top['cause']}」와 연결합니다. "
-        )
-        residual = "다만 보도·리서치 정황이므로 다음 분기 세부 자료로 교차확인이 필요합니다."
+        bridge = f"{top['source']}({top['evidence_level']})는 이 움직임을 「{top['cause']}」와 연결합니다. "
+        residual = "보도·리서치 단계의 정황이므로, 아래 레시피대로 다음 분기 세부 자료에서 직접 확인하면 확정됩니다."
         confidence = "High" if top.get("tier", 3) <= 1 else ("Medium" if top.get("tier", 3) == 2 else "Low")
     else:
-        bridge = "현재 키워드가 매칭된 공시·뉴스·리서치 근거가 없어 사업적 원인을 특정하지 않습니다. "
-        residual = "원인을 억지로 만들지 않고, 아래 확인 포인트를 다음 분기 자료로 점검하세요."
+        bridge = "매칭된 공시·뉴스·리서치 근거가 아직 없어 원인을 단정하지 않습니다. "
+        residual = "대신 아래 검증 레시피로 어디를 어떻게 봐야 하는지 짚었습니다."
         confidence = "Evidence pending"
 
     narrative = (move + mechanism + " " + bridge + residual).strip()
 
-    watch = _watch_points(metric, item, research)
     return {
         **item,
         "interpretation": {
@@ -206,7 +202,7 @@ def interpret_signal(item: dict, context_pool: list[dict], research: dict, marke
             "dart_answer": mech_answer,
             "cause_candidates": candidates,
             "confidence": confidence,
-            "watch_points": watch,
+            "verification": _verification_recipes(metric, research),
             "falsifier": _falsifier(metric),
         },
     }
@@ -218,20 +214,92 @@ def _headline(metric: str, item: dict, candidates: list[dict]) -> str:
     return f"{item['label']} {_DIRECTION.get(metric,'이탈')} — 근거 대기"
 
 
-def _watch_points(metric: str, item: dict, research: dict) -> list[str]:
-    base = {
-        "cogs_ratio": ["판가 인상이 원가 상승을 따라잡는지(스프레드)", "주력 원재료 단가·환율 방향"],
-        "sga_ratio": ["광고·판촉비가 매출 성장으로 회수되는지", "신규 진출(법인/채널) 초기비용의 일회성 여부"],
-        "opm": ["원가율과 판관비율 중 어느 축이 회복되는지", "해외 이익률이 가격 효과가 아닌 물량으로 개선되는지"],
-        "revenue_yoy": ["국내 점유율 하락이 멈추는지", "해외 성장이 판가가 아닌 물량으로 전환되는지"],
-        "fcf_margin": ["CAPEX 사이클의 준공·가동 일정 준수 여부", "운전자본 증가가 일시적인지 구조적인지"],
-        "cfo_margin": ["매출채권·재고 증가가 다음 분기 되돌려지는지"],
-        "cash_conversion": ["이익 대비 현금 전환율의 추세 반전 여부"],
-        "ar_days": ["신규 채널 비중 확대에 따른 구조적 장기화인지"],
-        "inventory_days": ["재고 증가가 수요 둔화인지 수출 선적 대기인지"],
-        "capex_ratio": ["투자 회수기간과 목표 가동률", "투자비·준공일정 추가 변경 여부"],
-    }.get(metric, ["다음 분기 동일 계정의 방향 지속 여부"])
-    return base + research.get("checkpoints", [])[:1]
+# Concrete verification recipes: for each metric, *where* to look (a named DART note,
+# disclosure, or IR table — not "the filing"), *what* to compute or compare, and the
+# *decision rule* that turns the result into a conclusion. This replaces "please check".
+_VERIFY = {
+    "cogs_ratio": [
+        {"where": "DART 분기보고서 주석 「비용의 성격별 분류」 또는 「매출원가」 명세",
+         "what": "원재료비/매출 비율의 QoQ 변화를, 같은 분기 주력 원재료(곡물·원맥·팜유 등) 선물가와 USD/KRW 평균환율 변화와 나란히 비교",
+         "rule": "원재료가·환율이 함께 올랐는데 원가율이 그만큼 올랐으면 → 투입가 압력(일시적일 수 있음). 원재료가 안정인데 원가율↑이면 → 제품 믹스 악화·가동률 저하(더 구조적)"},
+        {"where": "IR 실적발표 자료·콜의 원가 코멘트, 「매출에누리」 추이",
+         "what": "총매출 대비 매출에누리(판촉성 할인) 비율의 변화 확인 — 에누리가 늘면 순매출이 줄어 원가율이 자동 상승",
+         "rule": "에누리 확대가 원가율 상승의 상당 부분을 설명하면 → 원가가 아니라 가격·판촉 전략 이슈로 재분류"},
+    ],
+    "sga_ratio": [
+        {"where": "DART 「판매비와관리비」 주석(본 워크북 09 Cost Structure 자동추출표)",
+         "what": "항목별 금액의 QoQ·YoY를 뽑아 광고선전비·판촉비·물류비 중 증가 주도 항목을 특정하고, 매출 성장률과 증가율을 비교",
+         "rule": "광고·판촉비 증가율이 매출 성장률 안쪽이면 → 회수 가능한 투자. 매출은 정체인데 판관비만 늘면 → 비용 통제 실패"},
+        {"where": "최근 1년 시설투자·해외 판매법인 설립 공시(DART), IR 신규 진출 계획",
+         "what": "신규 법인/채널 진출 시점과 판관비 증가 시점이 겹치는지 대조",
+         "rule": "진출 초기비용과 시점이 일치하면 → 일회성(2~3분기 후 정상화 가정). 진출 없이 증가면 → 구조적 비용"},
+    ],
+    "opm": [
+        {"where": "본 워크북 02 Earnings Bridge(원가율·판관비율 기여 분해)",
+         "what": "OPM 변화를 원가율 기여와 판관비율 기여로 분해해 어느 축이 주도했는지 확인",
+         "rule": "원가율 주도면 cogs_ratio 레시피로, 판관비 주도면 sga_ratio 레시피로 한 단계 더 내려가 원인 추적"},
+        {"where": "IR 지역별 영업이익률(국내/미주/중국/일본/유럽)",
+         "what": "해외 이익률 개선이 판가 인상 효과인지 물량 증가에 따른 고정비 분산인지 구분",
+         "rule": "물량 동반 없이 판가만으로 개선됐으면 → 다음 분기 지속성 의심"},
+    ],
+    "revenue_yoy": [
+        {"where": "DART 사업보고서 「매출 실적」(지역별·제품별), IR 지역별 매출표",
+         "what": "지역별 매출 YoY를 분해하고, 국내는 3사(농심·삼양·오뚜기) 합산 성장률 대비 점유율 변화로, 해외는 물량 vs 판가로 분해",
+         "rule": "성장이 판가·환율 효과면 → 지속성 의문(보수). 물량·신규 지역 기여면 → 견조"},
+        {"where": "본 워크북 08 Revenue Build의 점유율 기여 행",
+         "what": "점유율 기여(%p)가 (+)인지 (−)인지 확인",
+         "rule": "점유율 기여가 음수면 산업 성장에 무임승차 중 → 경쟁 심화 신호"},
+    ],
+    "fcf_margin": [
+        {"where": "DART 현금흐름표 투자활동 + 「유형자산」 주석 + 신규 시설투자 공시",
+         "what": "CAPEX/매출을 과거 3년 평균과 비교하고, 증설 공시의 투자금액·완공예정일·자기자본 대비 비율을 확인",
+         "rule": "증설 사이클 진입이면 → 준공·가동 전까지 FCF 압박은 정상(회수 시점이 관건). 증설 없이 FCF 악화면 → 운전자본 문제(cfo_margin 레시피로)"},
+    ],
+    "cfo_margin": [
+        {"where": "DART 현금흐름표 「영업활동」 운전자본 증감 + 매출채권·재고 주석",
+         "what": "매출채권·재고 증가액을 매출 증가액과 비교(증가율 격차)",
+         "rule": "매출채권 증가율이 매출 증가율을 +10%p 이상 초과면 → 회수 지연으로 현금이 묶임. 재고가 초과면 → 과잉생산·수요둔화"},
+    ],
+    "cash_conversion": [
+        {"where": "DART 현금흐름표 + 운전자본 증감 주석",
+         "what": "CFO/영업이익 비율의 추세와, 그 하락이 매출채권·재고 증가로 설명되는지 확인",
+         "rule": "운전자본 증가로 설명되면 → 다음 분기 되돌림 여부 추적. 설명 안 되면 → 이익의 질(일회성 이익·회계추정) 의심"},
+    ],
+    "ar_days": [
+        {"where": "DART 「매출채권」 주석(연령분석·대손충당금 설정률), IR 채널 구성",
+         "what": "회수일수 추세와 대손충당금 설정률을 함께 보고, 해외·직거래·대형유통 비중 확대 여부와 대조",
+         "rule": "신규 채널 비중 확대로 결제조건이 길어진 구조면 → 추세 용인. 설정률까지 오르면 → 부실 위험 경고"},
+    ],
+    "inventory_days": [
+        {"where": "DART 「재고자산」 주석(재고자산평가손실), IR 출하·수출 물량",
+         "what": "재고 증가를 ① 수요 둔화(출하 감소)와 ② 수출 선적 대기·선제 생산으로 구분하고, 평가손실 인식 여부 확인",
+         "rule": "평가손실이 잡히면 → 수요 둔화(경고). 선적 대기면 → 다음 분기 매출로 전환(일시적)"},
+    ],
+    "capex_ratio": [
+        {"where": "신규 시설투자 공시(투자금액·완공일·목적), DART 「유형자산」 주석",
+         "what": "투자 목적(수출 대응·증설), 회수기간, 목표 가동률을 공시 원문에서 확인하고 투자비·일정의 정정 이력을 점검",
+         "rule": "투자비 증액·완공 지연 정정이 반복되면 → 회수 가정 하향. 일정 준수+가동률 상승이면 → 성장 옵션 유효"},
+    ],
+    "debt_ratio": [
+        {"where": "DART 재무상태표 + 「차입금」 주석(만기·금리 구조)",
+         "what": "단기차입금 비중과 1년 내 만기 도래액을 현금성자산으로 커버 가능한지 계산",
+         "rule": "단기차입·만기도래액이 현금을 초과하면 → 차환 리스크. 장기·고정금리 위주면 → 부담 제한적"},
+    ],
+    "current_ratio": [
+        {"where": "DART 재무상태표 유동자산·유동부채 구성",
+         "what": "유동비율 하락이 현금 감소 때문인지 단기차입·매입채무 증가 때문인지 분해",
+         "rule": "재고·매출채권은 늘었는데 현금이 줄었으면 → 운전자본에 현금이 묶인 것(cfo_margin 레시피로)"},
+    ],
+}
+
+
+def _verification_recipes(metric: str, research: dict) -> list[dict]:
+    recipes = _VERIFY.get(metric, [{
+        "where": "DART 해당 계정 주석과 직전 분기 동일 항목",
+        "what": "다음 분기 동일 계정의 방향이 지속되는지 추적",
+        "rule": "같은 방향이 2분기 이상 반복되면 → 일회성이 아니라 구조적 요인으로 재분류",
+    }])
+    return [dict(r) for r in recipes]
 
 
 def _falsifier(metric: str) -> str:
@@ -282,7 +350,7 @@ def interpret_price_action(
     # 1) Earnings axis
     if operating_axes:
         if operating_up >= operating_down:
-            earn_read = "최근 분기 실적은 훼손보다 개선에 가깝습니다"
+            earn_read = "최근 분기 실적은 훼손이 아니라 개선 쪽입니다"
             earn_weight = "Low" if price_weak else "Aligned"
         else:
             earn_read = "매출·이익·마진 중 일부가 실제로 약해졌습니다"
@@ -313,16 +381,20 @@ def interpret_price_action(
             "evidence_level": "리서치 추정",
         })
 
-    # 3) Flow axis — ownership reductions are the clearest "not earnings" cause.
-    sellers = [r for r in ownership if (_num(r.get("ratio_change")) or 0) < 0]
+    # 3) Flow axis — the *largest* ownership reduction is the clearest "not earnings"
+    #    cause; a trivial -0.04%p change is noise, not a story.
+    sellers = sorted(
+        (r for r in ownership if (_num(r.get("ratio_change")) or 0) < -0.3),
+        key=lambda r: _num(r.get("ratio_change")) or 0,
+    )
     if sellers:
         row = sellers[0]
         rc = _num(row.get("ratio_change"))
         shr = _num(row.get("share_change"))
         flow_read = (
-            f"{row.get('reporter') or '주요주주'}가 보유비율을 {rc:+.2f}%p"
-            f"{f' ({shr:+,.0f}주)' if shr is not None else ''} 줄였습니다. "
-            f"보유목적이 단순투자라면 지배구조가 아닌 단기 수급 부담으로 읽는 것이 맞습니다."
+            f"{row.get('reporter') or '주요주주'}의 보유비율이 {rc:+.2f}%p"
+            f"{f' ({shr:+,.0f}주)' if shr is not None else ''} 줄었습니다. "
+            f"보유목적이 단순투자라면 지배구조 이슈가 아니라 단기 수급 부담으로 읽어야 합니다."
         )
         attribution.append({
             "driver": "수급(기관/대주주)", "weight": "High",
@@ -344,7 +416,7 @@ def interpret_price_action(
     ]
     facility_driver = next((d for d in research.get("drivers", []) if d.get("theme") == "설비"), None)
     if facility or facility_driver:
-        ref = facility[0].get("title") if facility else facility_driver.get("fact")
+        ref = (facility[0].get("title", "").strip() if facility else facility_driver.get("fact"))
         attribution.append({
             "driver": "성장 옵션·실행 지연", "weight": "Medium",
             "reading": (
@@ -361,9 +433,9 @@ def interpret_price_action(
     if price_weak and operating_up >= operating_down and high_nonfundamental:
         verdict = "실적 때문만은 아닙니다 — 수급·기대치 조정이 더 크게 작용한 구간"
         thesis = (
-            "최근 분기 실적은 무너지지 않았는데 주가가 약합니다. 원인은 펀더멘털 훼손보다 "
-            f"{', '.join(a['driver'] for a in high_nonfundamental)}에 가깝습니다. "
-            "주가가 다시 힘을 받으려면 실적 자체보다 ‘기대를 숫자로 증명’하는 다음 분기 해외 성장과 수급 회복이 필요합니다."
+            "최근 분기 실적은 무너지지 않았는데 주가가 약합니다. 약세를 끌어내린 축은 펀더멘털이 아니라 "
+            f"{', '.join(a['driver'] for a in high_nonfundamental)}입니다. "
+            "주가가 다시 오르려면 실적 자체보다 다음 분기 해외 성장과 수급 회복이 숫자로 확인돼야 합니다."
         )
     elif price_weak and operating_down > operating_up:
         verdict = "주가 약세를 수급만으로 설명하기 어려운 펀더멘털 경계 구간"

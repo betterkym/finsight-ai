@@ -73,12 +73,15 @@ def build_investment_thesis(
         headline = "방향성이 혼재된 확인 구간"
         summary = "실적과 가격 신호가 한 방향으로 모이지 않습니다. 단일 원인으로 결론내리지 않고 다음 공시를 확인해야 합니다."
 
-    negative_ownership = [row for row in ownership if (_num(row.get("ratio_change")) or 0) < 0]
+    negative_ownership = sorted(
+        (row for row in ownership if (_num(row.get("ratio_change")) or 0) < -0.3),
+        key=lambda row: _num(row.get("ratio_change")) or 0,
+    )
     if negative_ownership:
         row = negative_ownership[0]
         hypotheses.append({
             "title": "5% 주주 수급 부담",
-            "explanation": f"{row.get('reporter') or '주요주주'}의 보유비율이 최근 보고에서 {row.get('ratio_change'):+.2f}%p 변동했습니다. 이는 사업 훼손과 별개로 단기 공급 부담이 될 수 있습니다.",
+            "explanation": f"{row.get('reporter') or '주요주주'}의 보유비율이 최근 보고에서 {row.get('ratio_change'):+.2f}%p 줄었습니다. 사업 훼손과 별개로 단기 공급 부담이 됩니다.",
             "confidence": "High", "evidence": ["DART 대량보유 상황보고"],
             "falsifier": "후속 보고에서 매도가 멈추고 기관·외국인 수급이 정상화되는 경우", "url": row.get("url"),
         })

@@ -438,7 +438,11 @@ with export_tab:
         valuation_range=valuation_range, research_reference=research,
         structured=structured, price_action=price_action, interpreted=interpreted,
     )
-    summary = generate_analysis_summary(company, kpis, margin_bridge, export_anomalies, dcf)
+    summary = generate_analysis_summary(
+        company, kpis, margin_bridge, export_anomalies, dcf,
+        price_action=price_action, interpreted=interpreted, structured=structured,
+        valuation_range=valuation_range, capital=capital, research=research,
+    )
     coverage = pd.DataFrame([
         {"근거 계층": "DART 재무", "상태": "Connected", "내용": f"{len(kpis)}개 분기"},
         {"근거 계층": "DART 공시", "상태": "Connected" if context.get("disclosures") else "Unavailable", "내용": f"{len(context.get('disclosures', []))}건"},
