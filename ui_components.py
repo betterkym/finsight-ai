@@ -94,8 +94,11 @@ def inject_css() -> None:
       .fs-spin {width:42px;height:42px;margin:0 auto 16px;border:4px solid #E6ECF3;border-top-color:#1D4E89;border-radius:50%;animation:fs-rot .8s linear infinite;}
       @keyframes fs-rot {to {transform:rotate(360deg);}}
       .fs-ov-title {font-size:1.18rem;font-weight:800;color:#0B1F33;letter-spacing:-.02em;}
-      .fs-ov-sub {font-size:.92rem;color:#475467;margin-top:9px;line-height:1.6;}
-      .fs-ov-eta {display:inline-block;margin-top:15px;font-size:.78rem;font-weight:700;color:#1D4E89;background:#EFF4FB;border:1px solid #DCE7F5;border-radius:999px;padding:4px 13px;}
+      .fs-ov-sub {font-size:.92rem;color:#475467;margin-top:9px;line-height:1.6;word-break:keep-all;}
+      @property --fs-sec {syntax:'<integer>';initial-value:0;inherits:false;}
+      .fs-ov-eta {display:inline-block;margin-top:15px;font-size:.78rem;font-weight:700;color:#1D4E89;background:#EFF4FB;border:1px solid #DCE7F5;border-radius:999px;padding:4px 13px;counter-reset:fssec var(--fs-sec);animation:fs-sec-tick 60s steps(60,end) forwards;}
+      .fs-ov-eta::after {content:"경과 " counter(fssec) "초 · 보통 10~20초";}
+      @keyframes fs-sec-tick {from {--fs-sec:0;} to {--fs-sec:60;}}
       /* Slim top bar (analysis pages + landing option A) */
       .fs-bar {display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #D7DEE7;padding:2px 0 12px;margin-bottom:20px;gap:20px;}
       .fs-bar-brand {font-size:1.5rem;font-weight:800;letter-spacing:-.045em;color:#0B1F33;line-height:1;}

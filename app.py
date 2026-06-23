@@ -133,9 +133,10 @@ _LOADING_HTML = (
     "<div class='fs-overlay'><div class='fs-ov-card'>"
     "<div class='fs-spin'></div>"
     "<div class='fs-ov-title'>분석을 준비하고 있어요</div>"
-    "<div class='fs-ov-sub'>DART 분기 재무·공시를 수집하고, 계정을 검증한 뒤 동종기업과 "
-    "교차검증할 준비를 하고 있습니다. 정확한 분석을 위해 데이터를 꼼꼼히 맞춰보는 중이에요 — 잠시만 기다려 주세요.</div>"
-    "<div class='fs-ov-eta'>예상 소요 10~20초</div>"
+    "<div class='fs-ov-sub'>DART 분기 재무·공시를 수집하고,<br>"
+    "계정을 검증한 뒤 동종기업과 교차검증할 준비를 하고 있습니다.<br>"
+    "정확한 분석을 위해 데이터를 꼼꼼히 맞춰보는 중이에요 — 잠시만 기다려 주세요.</div>"
+    "<div class='fs-ov-eta'></div>"
     "</div></div>"
 )
 
