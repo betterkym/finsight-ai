@@ -228,6 +228,16 @@ def _external_driver_note(context: dict) -> tuple[str, list[str]]:
     return " · ".join(notes[:3]) if notes else "외부 수급·원가·무역 proxy는 연결 상태를 별도 표에서 확인", status
 
 
+def _kp(word: str, with_batchim: str, without: str) -> str:
+    """한글 받침 유무로 조사를 고른다(농심→은, 카카오→는)."""
+    if not word:
+        return without
+    last = word[-1]
+    if "가" <= last <= "힣":
+        return with_batchim if (ord(last) - 0xAC00) % 28 else without
+    return without
+
+
 _PEER_HIGHER_BETTER = {"revenue_yoy", "opm", "cfo_margin", "fcf_margin"}
 _PEER_LOWER_BETTER = {"ar_days", "inventory_days", "debt_ratio"}
 
@@ -255,19 +265,19 @@ def _build_peer_read(peer_benchmark: pd.DataFrame, company: str) -> dict:
     margin_adv = any(m in adv for m in ("영업이익률", "CFO 마진", "FCF 마진"))
     growth_adv, growth_dis = "매출 성장률 YoY" in adv, "매출 성장률 YoY" in dis
     if margin_adv and growth_dis:
-        headline = f"{company}는 수익성에서 동종기업을 앞서지만, 성장성은 뒤처집니다."
+        headline = f"{company}{_kp(company, '은', '는')}수익성에서 동종기업을 앞서지만, 성장성은 뒤처집니다."
         so_what = "마진 우위는 멀티플 프리미엄을 일부 정당화하지만, 성장률이 업종에 못 미치면 성장 멀티플(PER 상단)은 제한됩니다. ‘질 좋은 저성장’으로 접근하는 편이 안전합니다."
     elif growth_adv and not margin_adv:
-        headline = f"{company}는 성장은 빠르지만, 수익성은 업종을 앞서지 못합니다."
+        headline = f"{company}{_kp(company, '은', '는')}성장은 빠르지만, 수익성은 업종을 앞서지 못합니다."
         so_what = "성장 우위는 매출 가정 상향을 지지하지만, 마진이 따라오지 않으면 성장의 질을 먼저 검증해야 합니다. OPM·FCFF 전환율은 보수적으로 둡니다."
     elif adv and not dis:
-        headline = f"{company}는 주요 지표에서 동종기업을 대체로 상회합니다."
+        headline = f"{company}{_kp(company, '은', '는')}주요 지표에서 동종기업을 대체로 상회합니다."
         so_what = "전반적 우위는 상대 프리미엄을 지지합니다. 이 우위가 일시적이 아니라 2~3분기 지속되는지 확인되면 가정 상향 여지가 커집니다."
     elif dis and not adv:
-        headline = f"{company}는 주요 지표에서 동종기업을 대체로 하회합니다."
+        headline = f"{company}{_kp(company, '은', '는')}주요 지표에서 동종기업을 대체로 하회합니다."
         so_what = "전반적 열위는 업종 대비 디스카운트를 설명합니다. 회복의 구체적 트리거(원가·믹스·점유율)가 확인되기 전에는 멀티플 상향을 자제합니다."
     else:
-        headline = f"{company}는 동종기업과 대체로 비슷한 수준입니다."
+        headline = f"{company}{_kp(company, '은', '는')}동종기업과 대체로 비슷한 수준입니다."
         so_what = "뚜렷한 상대 우열이 없으면 주가 차이는 펀더멘털보다 기대치·수급·테마에서 올 가능성이 큽니다. 02 투자판단의 괴리 분해를 함께 보세요."
     return {"headline": headline, "advantage": adv, "disadvantage": dis, "neutral": neu, "so_what": so_what}
 
@@ -654,6 +664,7 @@ with st.sidebar:
     st.divider()
     render_process_steps()
 
+loading = None  # 로딩 오버레이는 화면이 완전히 렌더될 때까지(스크립트 끝) 유지한다
 if analyze or st.session_state.pop("auto_run", False):
     if not company_input.strip():
         _clear_analysis()
@@ -675,9 +686,10 @@ if analyze or st.session_state.pop("auto_run", False):
             })
             for key in ("dcf", "dcf_is_auto", "dcf_version"):
                 st.session_state.pop(key, None)
-            loading.empty()
+            # 여기서 지우지 않는다 — 본문 차트·표가 다 그려진 뒤 스크립트 끝에서 제거
         except Exception as exc:
             loading.empty()
+            loading = None
             _clear_analysis()
             query = company_input.strip()
             suggestions = _load_suggestions(query) if "찾지 못" in str(exc) else []
@@ -689,6 +701,8 @@ if analyze or st.session_state.pop("auto_run", False):
 render_header(slim=True)
 
 if "kpis" not in st.session_state:
+    if loading is not None:
+        loading.empty()
     render_landing(QUICK_COMPANIES)
     st.stop()
 
@@ -1168,3 +1182,7 @@ with export_tab:
 
     st.markdown("#### 데이터 품질·결측 점검")
     render_quality(quality)
+
+# 본문 차트·표가 모두 렌더된 뒤에야 로딩 오버레이를 걷는다(흰 공백 없이 결과로 전환).
+if loading is not None:
+    loading.empty()
