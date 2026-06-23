@@ -1,111 +1,100 @@
-# FinSight AI — Context-Aware Financial Signal Analyst
+# FinSight — DART Filing Analysis Workbench
 
-한국 상장사의 재무 신호·밸류에이션·거시 맥락을 통합 분석하는 B2B analyst workflow tool.  
-IB/PE·컨설팅·금융기관 대상. "숫자"가 아닌 **"지표 간 관계 + 외부 맥락"** 해석에 집중.
+기업명 하나로 DART 분기 재무를 수집하고, 핵심 계정 전수 이상 탐지 → DART 내부 원인 추적 → 동종기업 검증 → 관련 공시·뉴스 맥락 → DCF 가정 연결까지 수행하는 Streamlit 분석 도구입니다.
 
----
+> 원칙: 근거가 없으면 원인을 확정하지 않습니다. 웹은 판단 순서를 안내하고, Excel은 검증 가능한 수식과 출처를 남깁니다.
 
-## 차별점
+## 분석 순서
 
-- Rule-based Signal Engine + LLM Narrative 구조 (LLM이 직접 데이터 검색 안 함)
-- OpenDART 재무제표 → KPI 자동 계산 → Financial Signal → Evidence Layer → LLM 리포트
+1. 최근 8개 또는 12개 분기 DART 재무 수집
+2. 수익성·현금흐름·운전자본·투자·재무안정성 13개 지표 전수 스캔
+3. 자체 과거 범위와 절대 기준을 벗어난 항목 선별
+4. 원가율·판관비율·매출채권·재고·매입채무 등 DART 계정으로 내부 원인 추적
+5. 자동 추천 동종기업 중앙값과 비교해 기업 고유 문제인지 업종 공통 현상인지 구분
+6. 관련 키워드가 확인된 DART 공시와 외부 뉴스만 맥락으로 연결
+7. 확인된 증거를 매출 성장률·영업이익률·FCFF 전환율 가정에 반영
 
----
+## 화면 구성
 
-## 주요 서비스 (11개)
-
-| 서비스 | 설명 | 주차 |
-|---|---|---|
-| Financial Statement Interpreter | 매출·이익·현금흐름·재무비율 자동 계산 | 1주차 ✅ |
-| Valuation Multiple Interpreter | PER/PBR/PSR/시가총액 계산 및 해석 | 1주차 ✅ |
-| Financial Conflict Engine | 지표 간 충돌 탐지 (고성장 + 현금흐름 악화 등) | 2주차 |
-| Company Archetype Classifier | 기업 유형 분류 (High Growth / Value Trap 등 6종) | 2주차 |
-| Macro Exposure Mapper | 금리·환율·경기 민감도 분석 | 2주차 |
-| News / Disclosure Event Tagger | 공시·뉴스 이벤트 태깅 | 3주차 |
-| Narrative-Fundamental Gap | 시장 내러티브 vs 재무 데이터 괴리 탐지 | 3주차 |
-| Consumer Attention Signal | 네이버 검색 트렌드 기반 소비자 관심도 | 3주차 |
-| Evidence Level & Confidence Score | 근거 강도 자동 산정 (High/Medium/Low/Needs Review) | 3주차 |
-| Consensus CSV Analyzer | Bloomberg/DataGuide forward expectation 분석 | 3주차 |
-| Multi-section Analyst Report | Beginner / Analyst / Investment Screening 모드 PDF | 4주차 |
-
----
-
-## KPI 계산 항목 (14개)
-
-| 구분 | KPI |
+| 탭 | 실무 목적 |
 |---|---|
-| 수익성 | 영업이익률(OPM), 순이익률, ROE, ROA |
-| 재무 안정성 | 부채비율 |
-| 현금흐름 | CFO Margin, CAPEX Ratio, FCF Margin |
-| 성장성 | 매출 성장률, 영업이익 성장률 |
-| 밸류에이션 | PER, PBR, PSR, 시가총액(EPS 역산 추정) |
+| `01 실적 트래커` | 분기 원본, QoQ/YoY, 매출·OPM·CFO 추세와 결측 확인 |
+| `02 이상 탐지·원인` | 13개 지표 전수 판정과 DART 내부 원인·근거 확인 |
+| `03 동종기업 검증` | 자동 추천 peer set의 최신 중앙값과 상대 격차 확인 |
+| `04 DCF 가정·가치` | 증거 조정 가정, 자동 자본구조, 예비 가치와 민감도 확인 |
+| `05 Excel·근거` | 재현 가능한 Analyst Workbook과 Markdown 요약 다운로드 |
 
----
+## 자동 수집 범위
 
-## 파일 구조
+- 손익: 매출, 영업이익, 순이익, 매출원가, 판관비
+- 현금흐름·투자: CFO, 유형자산 취득액, FCF
+- 운전자본: 매출채권, 재고, 매입채무, 회전일수
+- 재무상태: 유동자산·부채, 총자산·부채·자본, 부채비율
+- 자본구조: DART 발행주식수, 이자부채, 현금, 순차입금
+- 시장·거시: 최근 종가, 베타, 무위험수익률 등
 
-```
-finsight-ai/
-├── app.py                  # Streamlit UI (캐싱·현재 시장 동향·KPI 테이블)
-├── data_collector.py       # OpenDART + FinanceDataReader + ECOS 데이터 수집
-│                           #   get_financials / get_market_data / get_macro_data
-│                           #   get_current_market_data (현재 주가 + 1M/3M/6M 등락)
-│                           #   get_naver_search_trend (Week 3 플레이스홀더)
-│                           #   parse_consensus_csv (Week 3 플레이스홀더)
-├── kpi_engine.py           # 14개 KPI 계산 엔진
-├── signal_engine.py        # Financial Signal + Conflict 탐지 (2주차)
-├── report_generator.py     # LLM 리포트 + fpdf2 PDF 생성 (4주차)
-├── consensus_template.csv  # Consensus CSV 업로드 템플릿
-├── requirements.txt
-└── .env                    # API 키 (절대 커밋 금지)
-```
+연결재무제표를 우선하며, 누적 flow는 개별 분기로 환산합니다. 계정 결측은 임의 보정하지 않고 `Needs Review`로 표시합니다.
 
----
+## 동종기업 추천
 
-## 실행 방법
+농심 등 주요 테스트 기업은 검증된 업종 그룹에서 2개사를 자동 추천합니다. 자동 추천을 끄면 직접 선택할 수 있습니다. 추천 근거가 없는 기업은 임의로 비슷한 회사를 만들어내지 않습니다.
+
+## Analyst Workbook
+
+다운로드 Excel은 다음 12개 시트로 구성됩니다. 단일 OPM 추정이 아니라 매출·원가를
+바텀업으로 재구성하는 농심 DCF 레퍼런스 로직을 그대로 옮겼습니다.
+
+| 시트 | 내용 |
+|---|---|
+| `00 Cover` | 핵심 판단, 사실/가설 분리, 방법별 가치 차트 |
+| `01 Quarterly` | 분기 원본·파생 KPI·QoQ/YoY |
+| `02 Earnings Bridge` | 마진 변동 분해와 컨센서스 기대 괴리 |
+| `03 Thesis Evidence` | 가설 트리, 반증 조건, 신뢰도순 외부 맥락 |
+| `04 Peers Multiples` | 동종기업 벤치마크와 멀티플 교차검증 |
+| `05 DCF` | 수정 가능한 가정과 5개년 FCFF·WACC·영구가치 수식 |
+| `06 Scenarios` | Bear/Base/Bull 수식 재계산 |
+| `07 Checks Sources` | 데이터 품질, 모델 점검, 출처와 버전 |
+| `08 Revenue Build` | 매출 = 산업성장률(동종 합산 proxy) + 점유율 변화 / CPI 교차검증 |
+| `09 Cost Structure` | 판관비 = 인건비성(임금)+변동비(매출)+고정비(CPI)+대손 → 바텀업 OPM, 감가상각 배분 |
+| `10 WACC & Beta` | 동종기업 베타 unlever→relever, CAPM·WACC 브릿지 |
+| `11 Causal Read` | 주가 기여 분해와 이상신호별 원인 해석(근거 강도 표기) |
+
+입력 셀(파란색·노란색)과 수식 셀을 구분하며, 값이 아니라 수식이 남도록 생성합니다.
+`09 Cost Structure`의 바텀업 Implied OPM을 `05 DCF`의 OPM 가정과 대조해 마진의 현실성을 점검합니다.
+
+## 실행
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # API 키 5개 입력 후 저장
 streamlit run app.py
 ```
 
----
+`.env` 예시:
 
-## API 키 발급 (5개)
+```dotenv
+DART_API_KEY=발급키
+ECOS_API_KEY=발급키
+NAVER_CLIENT_ID=발급값
+NAVER_CLIENT_SECRET=발급값
+```
 
-| 키 | 발급처 | 용도 |
-|---|---|---|
-| `DART_API_KEY` | https://opendart.fss.or.kr | 재무제표 데이터 |
-| `ECOS_API_KEY` | https://ecos.bok.or.kr | 기준금리·국고채 |
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com | LLM 리포트 생성 |
-| `NAVER_CLIENT_ID` | https://developers.naver.com | 네이버 검색 트렌드 (Week 3) |
-| `NAVER_CLIENT_SECRET` | https://developers.naver.com | 네이버 검색 트렌드 (Week 3) |
+DART 키는 필수입니다. ECOS·뉴스 키가 없거나 연결되지 않으면 가능한 분석은 계속하고, 누락된 맥락은 화면에 명시합니다.
 
----
+## 주요 파일
 
-## 4주 로드맵
+| 파일 | 역할 |
+|---|---|
+| `app.py` | 다섯 탭 분석 워크플로우 |
+| `data_collector.py` | DART·시장·거시·뉴스 수집과 peer 추천 |
+| `kpi_engine.py` | 분기 KPI와 증감률 계산 |
+| `signal_engine.py` | 전수 이상 탐지, 내부 원인, peer·맥락 연결 |
+| `business_focus.py` | 이상 신호를 DCF 가정으로 변환 |
+| `diagnostics.py` | DCF와 민감도 계산 |
+| `excel_builder.mjs` | 수식 기반 6시트 Analyst Workbook 생성 |
+| `report_generator.py` | Streamlit 다운로드용 Excel 브리지 |
 
-| 주차 | 기간 | 마일스톤 |
-|---|---|---|
-| 1주차 | 2026-05-21 ~ 2026-05-27 | ✅ **완료** — Data Foundation & KPI Engine |
-| 2주차 | 2026-05-28 ~ 2026-06-03 | Signal, Conflict & Archetype Engine |
-| 3주차 | 2026-06-18 ~ 2026-06-24 | External Context & Evidence Layer (2주 휴식 후 재개) |
-| 4주차 | 2026-06-25 ~ 2026-07-01 | Analyst Report Generator & Streamlit Cloud 배포 |
+## 한계
 
-## PoC 기준 기업
-
-삼성전자 / 농심 / 에이피알
-
----
-
-## Company Archetype 분류 (6종)
-
-`High Growth Premium` / `Stable Compounder` / `Cyclical Recovery` / `Turnaround Candidate` / `Value Trap Risk` / `Cash Conversion Risk`
-
-## Evidence Level
-
-- **High** — 재무제표 + 공시/뉴스 근거 모두 확인
-- **Medium** — 재무제표 근거 있으나 외부 근거 제한
-- **Low** — 텍스트 기반 추론 중심
-- **Needs Review** — 데이터 충돌/누락
+DART 표준계정으로 확인되지 않는 제품·지역별 매출, 세부 원재료 단가, 일회성 비용의 정확한 성격은 주석·IR 원문 검토가 필요합니다. 외부 뉴스는 관련 키워드가 있는 맥락 후보이며 인과관계의 증거로 단독 사용하지 않습니다.

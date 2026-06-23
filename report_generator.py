@@ -1,165 +1,124 @@
-"""
-report_generator.py — LLM 기반 Analyst Report 생성 + fpdf2 PDF 출력 (Week 4 구현)
-
-입력:
-  company   : str                        — 기업명
-  financials: dict                       — data_collector.get_financials() 결과
-  kpis      : dict                       — kpi_engine.calculate_kpis() 결과
-  analysis  : dict                       — signal_engine.run_full_analysis() 결과
-  mode      : str                        — "beginner" | "analyst" | "screening"
-
-출력:
-  report_text: str    — 마크다운 형식 리포트
-  pdf_path   : str    — 저장된 PDF 경로 (export_pdf 호출 시)
-
-─────────────────────────────────────────────────────────────────────────────
-리포트 모드:
-  beginner   — 비전문가 대상. 비유·쉬운 설명 위주. 용어 해설 포함.
-  analyst    — IB/PE 애널리스트 대상. 지표 근거 + 판단 + What to Watch Next.
-  screening  — 투자 스크리닝 대상. Bull/Bear case + 핵심 리스크 + 액션 아이템.
-
-리포트 섹션 구조 (analyst 모드 기준):
-  1. Executive Summary          — 기업 개요 + 핵심 메시지 3줄
-  2. Financial Performance      — 수익성·성장성·현금흐름 해석
-  3. Valuation Analysis         — PER/PBR/PSR + 업종 비교 맥락
-  4. Financial Signal Summary   — Signal Engine 결과 해석
-  5. Conflict & Risk Flags      — Conflict Engine 결과
-  6. Company Archetype          — 분류 근거 설명
-  7. Macro Exposure             — 금리·환율 민감도
-  8. Evidence Level             — High/Medium/Low/Needs Review + Confidence Score
-  9. What to Watch Next         — 다음 분기 모니터링 포인트
-
-LLM 모델: claude-haiku-4-5 (비용 정책)
-─────────────────────────────────────────────────────────────────────────────
-"""
-
+"""Artifact-tool Excel bridge for the FinSight analyst workbook."""
 from __future__ import annotations
 
+import json
+import math
 import os
-from dotenv import load_dotenv
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 
-load_dotenv()
+import numpy as np
+import pandas as pd
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-_MODEL = "claude-haiku-4-5"  # 절대 변경 금지
-
-REPORT_MODES = ("beginner", "analyst", "screening")
-
-
-# ── LLM 클라이언트 (Week 4 활성화) ────────────────────────────────────────────
-
-def _get_client():
-    """Anthropic 클라이언트 반환 — API 키 없으면 RuntimeError"""
-    try:
-        from anthropic import Anthropic
-    except ImportError as e:
-        raise RuntimeError("anthropic 패키지가 설치되지 않았습니다: pip install anthropic") from e
-    if not ANTHROPIC_API_KEY:
-        raise RuntimeError("ANTHROPIC_API_KEY가 .env에 설정되지 않았습니다.")
-    return Anthropic(api_key=ANTHROPIC_API_KEY)
+NODE_BIN = Path("/Users/betterkim/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node")
+MODULES = Path("/Users/betterkim/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules")
+BUILDER = Path(__file__).with_name("excel_builder.mjs")
+RUNTIME_ROOT = Path("/tmp/finsight-excel-runtime")
 
 
-# ── 공개 API ──────────────────────────────────────────────────────────────────
+def _clean(value):
+    if isinstance(value, pd.DataFrame):
+        return [_clean(row) for row in value.replace({np.nan: None}).to_dict("records")]
+    if isinstance(value, pd.Series):
+        return _clean(value.to_dict())
+    if isinstance(value, dict):
+        return {str(key): _clean(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_clean(item) for item in value]
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        return None if not math.isfinite(float(value)) else float(value)
+    return value
 
-def generate_report(
+
+def _ensure_runtime() -> None:
+    if not NODE_BIN.exists() or not MODULES.joinpath("@oai", "artifact-tool").exists():
+        raise RuntimeError("Excel artifact runtime을 찾을 수 없습니다.")
+    RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+    link = RUNTIME_ROOT / "node_modules"
+    if link.is_symlink() and link.resolve() != MODULES.resolve():
+        link.unlink()
+    if not link.exists():
+        link.symlink_to(MODULES, target_is_directory=True)
+
+
+def export_excel(
     company: str,
-    financials: dict,
-    kpis: dict,
-    analysis: dict,
-    mode: str = "analyst",
-) -> str:
-    """
-    구조화된 재무 데이터 → LLM Analyst Report (마크다운)
-
-    Args:
-        company   : 기업명 (한국어)
-        financials: {year: {"매출액": int, ...}} — 단위 백만원
-        kpis      : {year: {"OPM": float, ...}}
-        analysis  : signal_engine.run_full_analysis() 반환값
-                    {"signals": [...], "conflicts": [...], "archetype": str,
-                     "macro_exposure": dict, "evidence": dict}
-        mode      : "beginner" | "analyst" | "screening"
-
-    반환: 마크다운 형식 리포트 문자열
-
-    구현 시 주의 (Week 4):
-      - LLM에게 숫자 계산을 시키지 말 것 — 이미 계산된 kpis·analysis를 JSON으로 전달
-      - 프롬프트에 mode별 tone 지침 포함
-      - max_tokens: 2000 (beginner) / 3000 (analyst) / 1500 (screening)
-      - JSON output 강제: {"sections": {"executive_summary": "...", ...}}
-    """
-    if mode not in REPORT_MODES:
-        raise ValueError(f"mode는 {REPORT_MODES} 중 하나여야 합니다.")
-    raise NotImplementedError("generate_report: Week 4 구현 예정")
-
-
-def _build_prompt(
-    company: str,
-    financials: dict,
-    kpis: dict,
-    analysis: dict,
-    mode: str,
-) -> str:
-    """
-    LLM 프롬프트 생성 — structured data → JSON prompt (Week 4 구현)
-
-    프롬프트 전략:
-      - System: 역할 정의 (IB analyst / 초보자 가이드 / 스크리닝 전문가)
-      - User: 기업명 + JSON 형태 kpis + signals + conflicts + archetype
-      - Output format 지정: JSON with section keys
-
-    Rule: LLM은 해석·서술만, 수치 계산은 하지 않음
-    """
-    raise NotImplementedError("_build_prompt: Week 4 구현 예정")
-
-
-def export_pdf(
-    report_text: str,
-    company: str,
-    output_dir: str = ".",
-) -> str:
-    """
-    마크다운 리포트 → fpdf2 PDF 파일 생성
-
-    Args:
-        report_text: generate_report() 결과 마크다운 문자열
-        company    : 기업명 (파일명에 사용)
-        output_dir : PDF 저장 디렉토리
-
-    반환: 생성된 PDF 파일 경로
-
-    구현 시 주의 (Week 4):
-      - 한국어 폰트 임베딩 필수 (NanumGothic 또는 Malgun Gothic)
-      - 섹션별 스타일: 제목 16pt Bold, 본문 10pt Regular
-      - 표지: 기업명 + FinSight AI 로고 + 생성일
-      - 꼬리말: Evidence Level + Confidence Score
-    """
-    raise NotImplementedError("export_pdf: Week 4 구현 예정")
-
-
-def generate_what_to_watch(kpis: dict, signals: list, conflicts: list) -> list[str]:
-    """
-    다음 분기 모니터링 포인트 생성 (3~5개)
-
-    반환: ["OPM 반등 여부 확인 (다음 분기 실적 발표)", "FCF 전환 가능성 모니터링", ...]
-    """
-    raise NotImplementedError("generate_what_to_watch: Week 4 구현 예정")
+    kpis: pd.DataFrame,
+    bridge: pd.DataFrame,
+    dcf: dict | None,
+    recommendations: dict,
+    quality_checks: list[dict],
+    anomalies: list[dict],
+    capital_inputs: dict | None = None,
+    *,
+    scan: list[dict] | None = None,
+    peer_benchmark: pd.DataFrame | None = None,
+    dcf_evidence: list[dict] | None = None,
+    peer_names: list[str] | None = None,
+    thesis: dict | None = None,
+    market_context: dict | None = None,
+    multiple_valuation: pd.DataFrame | None = None,
+    valuation_range: dict | None = None,
+    research_reference: dict | None = None,
+    structured: dict | None = None,
+    price_action: dict | None = None,
+    interpreted: list[dict] | None = None,
+) -> bytes:
+    """Build an eight-sheet, source-backed analyst workbook and return XLSX bytes."""
+    _ensure_runtime()
+    latest = kpis.iloc[-1]
+    core_quality = [item for item in quality_checks if item["field"] in {"매출액", "영업이익", "영업활동현금흐름"}]
+    model_status = "PASS" if all(item["missing_quarters"] == 0 for item in core_quality) else "REVIEW"
+    dcf_payload = None
+    if dcf:
+        dcf_payload = {key: value for key, value in dcf.items() if not isinstance(value, pd.DataFrame)}
+    payload = {
+        "company": company,
+        "asOf": str(latest.get("period")),
+        "forecastStart": int(latest.get("year")) + 1,
+        "ltmRevenue": float(kpis.tail(4)["revenue"].sum(min_count=4) / 1e8),
+        "quarterly": kpis,
+        "marginBridge": bridge,
+        "dcf": dcf_payload,
+        "recommendations": recommendations,
+        "quality": quality_checks,
+        "anomalies": anomalies,
+        "capital": capital_inputs or {},
+        "scan": scan or [],
+        "peerBenchmark": peer_benchmark if peer_benchmark is not None else pd.DataFrame(),
+        "dcfEvidence": dcf_evidence or [],
+        "peerNames": peer_names or [],
+        "thesis": thesis or {},
+        "marketContext": market_context or {},
+        "multipleValuation": multiple_valuation if multiple_valuation is not None else pd.DataFrame(),
+        "valuationRange": valuation_range or {},
+        "researchReference": research_reference or {},
+        "structured": structured or {},
+        "priceAction": price_action or {},
+        "interpreted": [
+            {**{k: v for k, v in item.items() if k not in ("interpretation",)}, "interpretation": item.get("interpretation", {})}
+            for item in (interpreted or [])
+        ],
+        "contextCount": sum(len(item.get("context", [])) for item in (scan or [])),
+        "modelStatus": model_status,
+    }
+    with tempfile.TemporaryDirectory(dir=RUNTIME_ROOT) as tmp:
+        work = Path(tmp)
+        shutil.copy2(BUILDER, work / "build_workbook.mjs")
+        input_path, output_path = work / "input.json", work / "workbook.xlsx"
+        input_path.write_text(json.dumps(_clean(payload), ensure_ascii=False), encoding="utf-8")
+        result = subprocess.run(
+            [str(NODE_BIN), str(work / "build_workbook.mjs"), str(input_path), str(output_path)],
+            cwd=work, capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0 or not output_path.exists():
+            raise RuntimeError(f"Excel 생성 실패: {(result.stderr or result.stdout)[-500:]}")
+        return output_path.read_bytes()
 
 
-if __name__ == "__main__":
-    # Week 4 구현 후 테스트
-    # from data_collector import get_financials, get_market_data
-    # from kpi_engine import calculate_kpis
-    # from signal_engine import run_full_analysis
-    #
-    # fin   = get_financials("에이피알")
-    # mkt   = get_market_data("에이피알", years=list(fin.keys()))
-    # kpis  = calculate_kpis(fin, mkt)
-    # analysis = run_full_analysis(kpis)
-    #
-    # report = generate_report("에이피알", fin, kpis, analysis, mode="analyst")
-    # pdf_path = export_pdf(report, "에이피알")
-    # print(f"PDF 저장: {pdf_path}")
-    print("report_generator.py — Week 4 구현 예정")
-    print(f"지원 모드: {REPORT_MODES}")
-    print(f"LLM 모델: {_MODEL}")
+def generate_report(*args, **kwargs):
+    raise RuntimeError("FinSight는 Analyst Workbook Excel 산출물을 사용합니다.")

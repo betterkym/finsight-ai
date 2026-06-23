@@ -1,242 +1,300 @@
-"""
-signal_engine.py — Financial Signal & Conflict 탐지 엔진 (Week 2 구현)
-
-입력:
-  kpis      : {year: {"OPM": float, "ROE": float, ...}}  — kpi_engine.calculate_kpis() 결과
-  macro     : {year: {"base_rate": float, ...}}           — data_collector.get_macro_data() 결과 [선택]
-  consensus : {year: {"forward_eps": float, ...}}         — data_collector.parse_consensus_csv() 결과 [선택]
-
-출력 구조:
-  signals   : list[SignalDict]
-  conflicts : list[ConflictDict]
-  archetype : str
-  evidence  : EvidenceDict
-
-─────────────────────────────────────────────────────────────────────────────
-SignalDict 형태:
-{
-    "category":      "profitability",          # profitability | growth | cashflow | stability | valuation
-    "name":          "opm_contraction",        # snake_case 식별자
-    "label":         "영업이익률 지속 위축",   # 한국어 표시명
-    "direction":     "negative",               # positive | negative | neutral | warning
-    "strength":      "High",                   # High | Medium | Low
-    "evidence":      "OPM 3년 연속 하락 (12.5% → 9.8% → 7.2%)",
-    "kpis_involved": ["OPM"],
-}
-
-ConflictDict 형태:
-{
-    "name":          "earnings_cash_divergence",
-    "label":         "이익-현금흐름 괴리",
-    "description":   "순이익은 증가했으나 CFO Margin이 하락. 이익의 질(quality) 저하 가능성.",
-    "severity":      "High",                   # High | Medium | Low
-    "kpis_involved": ["net_income_margin", "CFO_margin"],
-}
-
-EvidenceDict 형태:
-{
-    "level": "Medium",   # High | Medium | Low | Needs Review
-    "score": 0.68,       # 0.0~1.0 Analyst Confidence Score
-    "basis": "재무제표 데이터 기반. 공시·뉴스 근거 미수집 (Week 3 추가 예정).",
-}
-
-Company Archetype (6종):
-    "High Growth Premium"  — 고성장 + 고밸류에이션 정당화
-    "Stable Compounder"    — 안정적 복리 성장, 견조한 FCF
-    "Cyclical Recovery"    — 실적 회복세, 경기 민감 업종
-    "Turnaround Candidate" — 적자→흑자 전환 진행 중
-    "Value Trap Risk"      — 저밸류이나 펀더멘털 악화
-    "Cash Conversion Risk" — 이익은 나지만 현금화 안 됨
-─────────────────────────────────────────────────────────────────────────────
-"""
+"""Rule-based margin decomposition and continuous financial anomaly detection."""
 
 from __future__ import annotations
 
-# ── 타입 별칭 ─────────────────────────────────────────────────────────────────
-SignalDict   = dict
-ConflictDict = dict
-EvidenceDict = dict
+import math
 
-# ── Signal 카테고리 상수 ──────────────────────────────────────────────────────
-CAT_PROFITABILITY = "profitability"
-CAT_GROWTH        = "growth"
-CAT_CASHFLOW      = "cashflow"
-CAT_STABILITY     = "stability"
-CAT_VALUATION     = "valuation"
+import numpy as np
+import pandas as pd
 
-# ── Archetype 상수 ────────────────────────────────────────────────────────────
-ARCHETYPE_HIGH_GROWTH    = "High Growth Premium"
-ARCHETYPE_COMPOUNDER     = "Stable Compounder"
-ARCHETYPE_CYCLICAL       = "Cyclical Recovery"
-ARCHETYPE_TURNAROUND     = "Turnaround Candidate"
-ARCHETYPE_VALUE_TRAP     = "Value Trap Risk"
-ARCHETYPE_CASH_RISK      = "Cash Conversion Risk"
 
-ALL_ARCHETYPES = [
-    ARCHETYPE_HIGH_GROWTH, ARCHETYPE_COMPOUNDER, ARCHETYPE_CYCLICAL,
-    ARCHETYPE_TURNAROUND, ARCHETYPE_VALUE_TRAP, ARCHETYPE_CASH_RISK,
+def _v(row: pd.Series, key: str) -> float | None:
+    value = row.get(key)
+    return None if value is None or pd.isna(value) else float(value)
+
+
+def _up(value: float | None, threshold: float = 0.5) -> bool:
+    return value is not None and value > threshold
+
+
+def _down(value: float | None, threshold: float = 0.5) -> bool:
+    return value is not None and value < -threshold
+
+
+def classify_margin_pattern(current: pd.Series, previous: pd.Series) -> dict:
+    """Apply one of the 15 proposal rules to a quarter-on-quarter comparison."""
+    revenue_change = _v(current, "revenue_qoq")
+    opm_change = _v(current, "opm_qoq_pp")
+    cogs_change = _v(current, "cogs_ratio_qoq_pp")
+    sga_change = _v(current, "sga_ratio_qoq_pp")
+    cfo_change = _v(current, "cfo_qoq")
+    fcf_change = _v(current, "fcf_qoq")
+    net_change = _v(current, "net_income_qoq")
+    inv_change = _v(current, "inventory_qoq")
+    rec_change = _v(current, "receivables_qoq")
+    capex_change = None
+    if _v(previous, "capex") not in (None, 0) and _v(current, "capex") is not None:
+        capex_change = (abs(_v(current, "capex")) / abs(_v(previous, "capex")) - 1) * 100
+
+    title, comment, severity = "안정적 수익 구조", "매출·OPM·CFO가 모두 안정 범위에 있습니다.", "Stable"
+    if _up(revenue_change) and _down(opm_change) and _up(cogs_change) and _up(sga_change):
+        title, comment, severity = "복합 비용 부담", "원가율과 판관비율이 함께 상승해 매출 성장을 상쇄했습니다.", "High"
+    elif _up(revenue_change) and _down(opm_change) and _up(cogs_change):
+        title, comment, severity = "원가 부담", f"원가율 {cogs_change:+.1f}%p가 OPM 하락의 주요 기여 요인입니다.", "High"
+    elif _up(revenue_change) and _down(opm_change) and _up(sga_change):
+        title, comment, severity = "판관비 부담", f"판관비율 {sga_change:+.1f}%p가 OPM 하락의 주요 기여 요인입니다.", "High"
+    elif _up(revenue_change) and _up(opm_change):
+        title, comment = "레버리지 효과", "외형 성장과 수익성이 동반 개선됐습니다. 고정비 레버리지 또는 비용 통제 여부를 확인하세요."
+    elif _down(revenue_change) and abs(opm_change or 0) <= 0.5:
+        title, comment, severity = "마진 방어", "매출 감소에도 수익성을 유지했습니다. 원가 절감의 지속 가능성을 확인하세요.", "Watch"
+    elif _down(revenue_change) and _down(opm_change):
+        title, comment, severity = "디레버리지", "매출 감소와 OPM 하락이 동시에 나타나 고정비 부담 가능성이 있습니다.", "High"
+    elif abs(revenue_change or 0) <= 0.5 and _down(opm_change):
+        title, comment, severity = "비용 구조 악화", "매출 정체 구간에서 원가 또는 판관비 부담이 확대됐습니다.", "High"
+    elif _up(net_change) and _down(cfo_change):
+        title, comment, severity = "이익의 질 저하", "순이익은 증가했지만 CFO가 감소했습니다. 운전자본 변화를 확인하세요.", "High"
+    elif (_v(current, "cfo") or 0) > 0 and _up(capex_change, 30):
+        title, comment, severity = "투자 부담", "영업현금은 양호하지만 CAPEX 증가로 FCF 부담이 커졌습니다.", "Watch"
+    elif _up(revenue_change) and inv_change is not None and inv_change > (revenue_change or 0) + 10:
+        title, comment, severity = "재고 과잉 가능성", "재고 증가율이 매출 증가율을 크게 웃돕니다. 수요 둔화 여부를 확인하세요.", "High"
+    elif _up(revenue_change) and rec_change is not None and rec_change > (revenue_change or 0) + 10:
+        title, comment, severity = "현금 회수 지연", "매출채권 증가율이 매출 증가율을 크게 웃돕니다.", "High"
+    elif _up(opm_change) and _down(cfo_change):
+        title, comment, severity = "낮은 현금 전환", "OPM은 개선됐지만 CFO가 감소했습니다. 재고·매출채권을 함께 확인하세요.", "High"
+    elif _up(revenue_change) and _down(fcf_change):
+        title, comment, severity = "외형 성장·현금 소진", "매출 성장에도 FCF가 감소했습니다. CAPEX와 운전자본 부담을 분리해 보세요.", "Watch"
+    return {"pattern": title, "comment": comment, "severity": severity}
+
+
+def build_margin_bridge(kpis: pd.DataFrame) -> pd.DataFrame:
+    """Decompose OPM change into gross-margin and SG&A contributions."""
+    rows = []
+    for index in range(1, len(kpis)):
+        current, previous = kpis.iloc[index], kpis.iloc[index - 1]
+        opm_delta = _v(current, "opm_qoq_pp")
+        cogs_delta = _v(current, "cogs_ratio_qoq_pp")
+        sga_delta = _v(current, "sga_ratio_qoq_pp")
+        pattern = classify_margin_pattern(current, previous)
+        recent_opm = kpis.iloc[max(0, index - 3):index + 1]["opm"].dropna()
+        if (
+            pattern["pattern"] == "안정적 수익 구조"
+            and len(recent_opm) == 4
+            and recent_opm.std() > 3.0
+        ):
+            pattern = {
+                "pattern": "계절성·비경상 변동",
+                "comment": "최근 4분기 OPM 편차가 큽니다. 계절성 또는 일회성 비용 여부를 확인하세요.",
+                "severity": "Watch",
+            }
+        rows.append({
+            "period": current["period"],
+            "revenue_change_pct": _v(current, "revenue_qoq"),
+            "previous_opm": _v(previous, "opm"),
+            "cogs_contribution_pp": None if cogs_delta is None else -cogs_delta,
+            "sga_contribution_pp": None if sga_delta is None else -sga_delta,
+            "other_contribution_pp": None if opm_delta is None or cogs_delta is None or sga_delta is None else opm_delta + cogs_delta + sga_delta,
+            "current_opm": _v(current, "opm"),
+            "opm_change_pp": opm_delta,
+            **pattern,
+        })
+    return pd.DataFrame(rows)
+
+
+def _consecutive(values: pd.Series, count: int, predicate) -> bool:
+    clean = values.dropna().tail(count)
+    return len(clean) == count and all(predicate(value) for value in clean)
+
+
+def detect_anomalies(kpis: pd.DataFrame) -> list[dict]:
+    signals = []
+    if len(kpis) < 2:
+        return signals
+    revenue_growth = kpis["revenue_qoq"]
+    if _consecutive(kpis["receivables_qoq"] - revenue_growth, 3, lambda x: x > 0):
+        signals.append({"signal": "매출채권 연속 증가", "severity": "High", "comment": "3분기 연속 매출채권 증가율이 매출 증가율을 웃돌았습니다. CFO 약화 가능성을 확인하세요."})
+    if _consecutive(kpis["inventory_qoq"] - revenue_growth, 2, lambda x: x > 0):
+        signals.append({"signal": "재고 연속 누적", "severity": "High", "comment": "2분기 연속 재고 증가율이 매출 증가율을 웃돌았습니다. 수요 둔화 또는 과잉 생산 가능성이 있습니다."})
+    conversion = kpis["cash_conversion"].replace([np.inf, -np.inf], np.nan)
+    if len(conversion.dropna().tail(4)) == 4 and all(np.diff(conversion.dropna().tail(4)) < 0):
+        signals.append({"signal": "CFO/영업이익 연속 하락", "severity": "High", "comment": "현금 전환율이 3개 구간 연속 하락했습니다. 이익의 질을 재검토하세요."})
+    opm = kpis["opm"].dropna().tail(5)
+    if len(opm) == 5 and all(np.diff(opm) < 0):
+        signals.append({"signal": "OPM 4분기 연속 하락", "severity": "High", "comment": "구조적 수익성 악화 가능성이 있어 DCF 마진 가정 재검토가 필요합니다."})
+    if _consecutive(kpis["fcf"], 3, lambda x: x < 0):
+        signals.append({"signal": "FCF 3분기 연속 마이너스", "severity": "High", "comment": "현금 소진이 이어지고 있습니다. 투자 일정과 자금 조달 리스크를 확인하세요."})
+    return signals
+
+
+def run_full_analysis(kpis: pd.DataFrame, macro=None) -> dict:
+    bridge = build_margin_bridge(kpis)
+    return {"margin_bridge": bridge, "anomalies": detect_anomalies(kpis)}
+
+
+SCAN_SPECS = [
+    {"metric": "revenue_yoy", "label": "매출 성장률 YoY", "area": "성장", "unit": "%", "bad": "low", "warn_gap": 10.0, "hard": -5.0, "dcf": "매출 성장률"},
+    {"metric": "opm", "label": "영업이익률", "area": "수익성", "unit": "%", "bad": "low", "warn_gap": 2.0, "hard": None, "dcf": "영업이익률"},
+    {"metric": "cogs_ratio", "label": "매출원가율", "area": "수익성", "unit": "%", "bad": "high", "warn_gap": 1.5, "hard": None, "dcf": "영업이익률"},
+    {"metric": "sga_ratio", "label": "판관비율", "area": "수익성", "unit": "%", "bad": "high", "warn_gap": 1.5, "hard": None, "dcf": "영업이익률"},
+    {"metric": "cfo_margin", "label": "CFO 마진", "area": "현금흐름", "unit": "%", "bad": "low", "warn_gap": 3.0, "hard": 0.0, "dcf": "FCFF 전환율"},
+    {"metric": "fcf_margin", "label": "FCF 마진", "area": "현금흐름", "unit": "%", "bad": "low", "warn_gap": 3.0, "hard": 0.0, "dcf": "FCFF 전환율"},
+    {"metric": "cash_conversion", "label": "CFO/영업이익", "area": "현금흐름", "unit": "%", "bad": "low", "warn_gap": 25.0, "hard": 60.0, "dcf": "FCFF 전환율"},
+    {"metric": "ar_days", "label": "매출채권 회수일수", "area": "운전자본", "unit": "일", "bad": "high", "warn_gap": 15.0, "hard": None, "dcf": "FCFF 전환율"},
+    {"metric": "inventory_days", "label": "재고 회전일수", "area": "운전자본", "unit": "일", "bad": "high", "warn_gap": 15.0, "hard": None, "dcf": "FCFF 전환율"},
+    {"metric": "payable_days", "label": "매입채무 지급일수", "area": "운전자본", "unit": "일", "bad": "high", "warn_gap": 20.0, "hard": None, "dcf": "FCFF 전환율"},
+    {"metric": "capex_ratio", "label": "CAPEX/매출", "area": "투자", "unit": "%", "bad": "high", "warn_gap": 3.0, "hard": None, "dcf": "FCFF 전환율"},
+    {"metric": "current_ratio", "label": "유동비율", "area": "재무안정성", "unit": "%", "bad": "low", "warn_gap": 25.0, "hard": 100.0, "dcf": "순차입금/WACC"},
+    {"metric": "debt_ratio", "label": "부채비율", "area": "재무안정성", "unit": "%", "bad": "high", "warn_gap": 30.0, "hard": 150.0, "dcf": "순차입금/WACC"},
 ]
 
 
-# ── 공개 API ──────────────────────────────────────────────────────────────────
-
-def generate_financial_signals(kpis: dict) -> list[SignalDict]:
-    """
-    KPI 딕셔너리 → Financial Signal 리스트 (8개 이상)
-
-    탐지 대상 신호 (Week 2 구현):
-    [수익성]
-      - OPM 지속 개선 / 위축 (3년 추세)
-      - 순이익률 vs OPM 괴리 (세금·이자 효과)
-      - ROE 레버리지 분해 (듀퐁 분해 — 수익성 vs 회전율 vs 레버리지)
-    [성장성]
-      - 매출 가속/감속 성장 (성장률 기울기)
-      - 영업이익 성장률 > 매출 성장률 (운영 레버리지)
-    [현금흐름]
-      - FCF Margin 개선/악화 추세
-      - CAPEX Heavy (투자 집중 국면)
-    [재무 안정성]
-      - 부채비율 급등 경고
-      - ROA 하락 (자산 효율성 저하)
-
-    반환: list[SignalDict]  (방향·강도·근거 포함)
-    """
-    raise NotImplementedError("generate_financial_signals: Week 2 구현 예정")
+def _num(value) -> float | None:
+    return None if value is None or pd.isna(value) or not np.isfinite(value) else float(value)
 
 
-def detect_conflicts(kpis: dict) -> list[ConflictDict]:
-    """
-    KPI 딕셔너리 → 지표 간 충돌 신호 리스트 (3개 이상)
-
-    탐지 대상 충돌 (Week 2 구현):
-      1. 이익-현금흐름 괴리  — 순이익 ↑ but CFO Margin ↓  (이익의 질 저하)
-      2. 성장-수익성 역행    — 매출 ↑ but OPM ↓           (규모의 불경제)
-      3. 밸류에이션-펀더멘털 — PER 고평가 but ROE·성장률 ↓ (밸류에이션 버블)
-      4. 레버리지-수익성     — 부채비율 ↑ but ROE ↓       (부채 효율 저하)
-      5. CAPEX-FCF 역행     — CAPEX Heavy but FCF 음수     (과투자 위험)
-
-    반환: list[ConflictDict]  (심각도·연관 KPI 포함)
-    """
-    raise NotImplementedError("detect_conflicts: Week 2 구현 예정")
-
-
-def classify_archetype(kpis: dict) -> str:
-    """
-    KPI 딕셔너리 → Company Archetype 분류
-
-    분류 로직 (Week 2 구현):
-      High Growth Premium  : revenue_growth > 20% AND PER > 25배
-      Stable Compounder    : revenue_growth 5~15% AND FCF_margin > 8% AND debt_ratio < 100%
-      Cyclical Recovery    : op_income_growth > 50% (저점 회복) AND OPM 상승 추세
-      Turnaround Candidate : 최근 연도 OPM > 0 AND 이전 2개년 OPM < 0
-      Value Trap Risk      : PBR < 0.8 AND revenue_growth < 0
-      Cash Conversion Risk : net_income_margin > 5% AND FCF_margin < 1%
-
-    반환: str — ALL_ARCHETYPES 중 하나
-    """
-    raise NotImplementedError("classify_archetype: Week 2 구현 예정")
-
-
-def calculate_market_expectation_gap(
-    kpis: dict,
-    consensus: dict,
-) -> dict:
-    """
-    현재 KPI vs Consensus(애널리스트 예상) → 시장 기대 괴리 분석 (Week 3 선택)
-
-    Args:
-        kpis      : kpi_engine.calculate_kpis() 결과
-        consensus : data_collector.parse_consensus_csv() 결과
-
-    반환 형태:
-    {
-        "forward_per_gap":        3.2,   # 실제 PER - Consensus PER (배)
-        "target_price_upside":    12.5,  # (목표주가 - 현재주가) / 현재주가 (%)
-        "eps_revision_direction": "up",  # "up" | "down" | "neutral"
-        "summary": "컨센서스 대비 PER 3.2배 고평가, 목표주가 상승여력 12.5%",
-    }
-    """
-    raise NotImplementedError("calculate_market_expectation_gap: Week 3 구현 예정")
-
-
-def map_macro_exposure(kpis: dict, macro: dict) -> dict:
-    """
-    KPI + 거시 지표 → 매크로 민감도 분석 (Week 2 구현)
-
-    분석 항목:
-      - 금리 민감도 (부채비율 높을수록 금리 상승 리스크 ↑)
-      - 환율 민감도 (수출 비중, 달러 부채 추정)
-      - KOSPI 상관성 (베타 추정)
-
-    반환 형태:
-    {
-        "rate_sensitivity":   "High",    # High | Medium | Low
-        "fx_sensitivity":     "Medium",
-        "kospi_correlation":  "High",
-        "summary": "고부채 구조로 금리 상승 시 이자비용 증가 리스크 높음",
-    }
-    """
-    raise NotImplementedError("map_macro_exposure: Week 2 구현 예정")
+def _root_cause(metric: str, kpis: pd.DataFrame) -> tuple[str, list[str], bool]:
+    latest = kpis.iloc[-1]
+    evidence: list[str] = []
+    external_needed = False
+    if metric in {"opm", "cogs_ratio", "sga_ratio"}:
+        cogs = _num(latest.get("cogs_ratio_qoq_pp"))
+        sga = _num(latest.get("sga_ratio_qoq_pp"))
+        if cogs is not None:
+            evidence.append(f"원가율 QoQ {cogs:+.1f}%p")
+        if sga is not None:
+            evidence.append(f"판관비율 QoQ {sga:+.1f}%p")
+        if cogs is None and sga is None:
+            return "DART 내 원가율·판관비율 분해 계정이 부족합니다.", evidence, True
+        if (cogs or 0) <= 0 and (sga or 0) <= 0:
+            return "원가율·판관비율 악화가 확인되지 않아 DART 본표만으로 OPM 하락 원인을 설명할 수 없습니다.", evidence, True
+        main = "원가율" if max(cogs or 0, 0) >= max(sga or 0, 0) else "판관비율"
+        return f"DART 분해상 {main} 변화의 기여가 더 큽니다. 실제 사업 원인은 공시 주석 또는 외부 맥락 확인이 필요합니다.", evidence, True
+    if metric in {"cfo_margin", "fcf_margin", "cash_conversion"}:
+        ar = _num(latest.get("receivables_yoy"))
+        inv = _num(latest.get("inventory_yoy"))
+        pay = _num(latest.get("payables_yoy"))
+        capex = _num(latest.get("capex_ratio"))
+        for label, value in [("매출채권 YoY", ar), ("재고 YoY", inv), ("매입채무 YoY", pay), ("CAPEX/매출", capex)]:
+            if value is not None:
+                evidence.append(f"{label} {value:+.1f}%" if "YoY" in label else f"{label} {value:.1f}%")
+        drivers = []
+        revenue_yoy = _num(latest.get("revenue_yoy")) or 0
+        if ar is not None and ar > revenue_yoy + 10:
+            drivers.append("매출채권 증가")
+        if inv is not None and inv > revenue_yoy + 10:
+            drivers.append("재고 증가")
+        if metric == "fcf_margin" and capex is not None and capex > 8:
+            drivers.append("CAPEX 부담")
+        answer = ", ".join(drivers) if drivers else "DART 운전자본·CAPEX만으로 단일 원인을 특정하지 못했습니다"
+        return answer, evidence, not bool(drivers)
+    if metric in {"ar_days", "inventory_days", "payable_days"}:
+        revenue_yoy = _num(latest.get("revenue_yoy"))
+        related = {
+            "ar_days": _num(latest.get("receivables_yoy")),
+            "inventory_days": _num(latest.get("inventory_yoy")),
+            "payable_days": _num(latest.get("payables_yoy")),
+        }[metric]
+        if revenue_yoy is not None:
+            evidence.append(f"매출 YoY {revenue_yoy:+.1f}%")
+        if related is not None:
+            evidence.append(f"관련 계정 YoY {related:+.1f}%")
+        return "관련 운전자본 계정의 증가 속도를 매출 성장과 비교했습니다. 수요·회수조건·조달조건은 외부 확인이 필요합니다.", evidence, True
+    if metric == "capex_ratio":
+        evidence.append(f"최근 CAPEX/매출 {_num(latest.get('capex_ratio')) or 0:.1f}%")
+        return "DART에서 투자 현금유출 규모는 확인되나 투자 목적·회수기간은 공시 원문 확인이 필요합니다.", evidence, True
+    if metric in {"current_ratio", "debt_ratio"}:
+        return "재무상태표의 유동자산·유동부채·총부채·자본으로 산출했습니다.", evidence, False
+    return "DART 손익계정만으로 매출 변화의 사업 원인을 특정할 수 없습니다.", evidence, True
 
 
-def calculate_evidence_level(
-    signals: list[SignalDict],
-    conflicts: list[ConflictDict],
-    has_news: bool = False,
-    has_consensus: bool = False,
-) -> EvidenceDict:
-    """
-    Signal + Conflict 목록 → Evidence Level & Analyst Confidence Score
-
-    산정 기준 (Week 2 구현):
-      High        : 재무제표 근거 ≥ 3개 AND (공시/뉴스 OR Consensus 있음)
-      Medium      : 재무제표 근거 ≥ 2개 BUT 외부 근거 없음
-      Low         : 재무제표 근거 1개 이하 OR 텍스트 추론 중심
-      Needs Review: 데이터 충돌(Conflict 수 ≥ 3) 또는 누락 계정 다수
-
-    Confidence Score:
-      0.8~1.0 : High evidence, conflict 없음
-      0.6~0.79: Medium evidence
-      0.4~0.59: Low evidence 또는 conflict 존재
-      < 0.4   : Needs Review
-
-    반환: EvidenceDict
-    """
-    raise NotImplementedError("calculate_evidence_level: Week 2 구현 예정")
-
-
-def run_full_analysis(
-    kpis: dict,
-    macro: dict | None = None,
-    consensus: dict | None = None,
-    has_news: bool = False,
-) -> dict:
-    """
-    전체 Signal 분석 파이프라인 — app.py·report_generator.py에서 호출
-
-    반환 형태:
-    {
-        "signals":   list[SignalDict],
-        "conflicts": list[ConflictDict],
-        "archetype": str,
-        "macro_exposure": dict,          # macro가 None이면 {}
-        "market_gap": dict,              # consensus가 None이면 {}
-        "evidence":  EvidenceDict,
-    }
-    """
-    raise NotImplementedError("run_full_analysis: Week 2 구현 예정")
+def scan_financial_health(kpis: pd.DataFrame) -> list[dict]:
+    """Scan every core metric against company history; return normal and abnormal rows."""
+    if kpis.empty:
+        return []
+    latest = kpis.iloc[-1]
+    rows = []
+    for spec in SCAN_SPECS:
+        value = _num(latest.get(spec["metric"]))
+        history = pd.to_numeric(kpis.iloc[:-1].get(spec["metric"], pd.Series(dtype=float)), errors="coerce").dropna().tail(7)
+        baseline = float(history.median()) if not history.empty else None
+        status, severity, reason = "Normal", "Normal", "자체 과거 정상 범위 내"
+        if value is None:
+            status, severity, reason = "Needs Review", "Review", "DART 계정 결측"
+        else:
+            gap = value - baseline if baseline is not None else None
+            adverse_gap = (
+                gap is not None and ((spec["bad"] == "high" and gap > spec["warn_gap"]) or (spec["bad"] == "low" and gap < -spec["warn_gap"]))
+            )
+            hard_breach = spec["hard"] is not None and (
+                (spec["bad"] == "high" and value > spec["hard"]) or (spec["bad"] == "low" and value < spec["hard"])
+            )
+            if hard_breach:
+                status, severity, reason = "Abnormal", "High", "절대 위험 기준 이탈"
+            elif adverse_gap:
+                status, severity = "Abnormal", "Watch"
+                reason = "자체 과거 범위 이탈(방향 해석 필요)" if spec["metric"] == "payable_days" else "자체 과거 중앙값 대비 유의한 악화"
+        answer, evidence, external_needed = _root_cause(spec["metric"], kpis) if status == "Abnormal" else ("—", [], False)
+        rows.append({
+            **spec,
+            "period": latest.get("period"), "value": value, "baseline": baseline,
+            "deviation": None if value is None or baseline is None else value - baseline,
+            "status": status, "severity": severity, "reason": reason,
+            "question": f"{spec['label']}이 왜 자체 과거 범위를 벗어났는가?" if status == "Abnormal" else "—",
+            "dart_answer": answer, "dart_evidence": evidence,
+            "external_needed": external_needed,
+            "peer_value": None, "peer_gap": None, "peer_verdict": "비교 전",
+            "context": [],
+        })
+    return rows
 
 
-if __name__ == "__main__":
-    # Week 2 구현 후 테스트
-    # from data_collector import get_financials, get_market_data, get_macro_data
-    # from kpi_engine import calculate_kpis
-    #
-    # fin = get_financials("삼성전자")
-    # mkt = get_market_data("삼성전자", years=list(fin.keys()))
-    # macro = get_macro_data(years=list(fin.keys()))
-    # kpis = calculate_kpis(fin, mkt)
-    # result = run_full_analysis(kpis, macro)
-    # print(result)
-    print("signal_engine.py — Week 2 구현 예정")
-    print(f"Archetype 분류 6종: {ALL_ARCHETYPES}")
+def attach_peer_evidence(scan: list[dict], peer_kpis: dict[str, pd.DataFrame]) -> list[dict]:
+    enriched = []
+    spec_map = {item["metric"]: item for item in SCAN_SPECS}
+    for item in scan:
+        peer_values = []
+        for frame in peer_kpis.values():
+            if not frame.empty and item["metric"] in frame:
+                value = _num(frame.iloc[-1].get(item["metric"]))
+                if value is not None:
+                    peer_values.append(value)
+        row = dict(item)
+        if peer_values and item["value"] is not None:
+            peer_median = float(np.median(peer_values))
+            gap = item["value"] - peer_median
+            bad = spec_map[item["metric"]]["bad"]
+            company_specific = (bad == "high" and gap > 0) or (bad == "low" and gap < 0)
+            row.update({
+                "peer_value": peer_median, "peer_gap": gap,
+                "peer_verdict": "기업 고유 이슈 가능성" if company_specific else "업종 공통/상대 우위",
+            })
+        enriched.append(row)
+    return enriched
+
+
+CONTEXT_KEYWORDS = {
+    "성장": ["수출", "매출", "판매", "신제품", "해외", "중국", "미국", "수요"],
+    "수익성": ["원가", "가격", "원재료", "마케팅", "광고", "물류", "환율", "판관비"],
+    "현금흐름": ["재고", "채권", "현금", "투자", "공장", "증설", "공급망"],
+    "운전자본": ["재고", "채권", "회수", "공급망", "유통", "채널"],
+    "투자": ["투자", "공장", "증설", "설비", "생산능력"],
+    "재무안정성": ["차입", "사채", "신용", "유동성", "자금조달"],
+}
+
+
+def attach_context(scan: list[dict], disclosures: list[dict], news: list[dict]) -> list[dict]:
+    enriched = []
+    for item in scan:
+        row = dict(item)
+        if item["status"] != "Abnormal" or not item["external_needed"]:
+            enriched.append(row)
+            continue
+        keywords = CONTEXT_KEYWORDS.get(item["area"], [])
+        matches = []
+        for context_item in disclosures + news:
+            haystack = f"{context_item.get('title','')} {context_item.get('description','')}"
+            matched = [keyword for keyword in keywords if keyword in haystack]
+            if matched:
+                matches.append({**context_item, "matched_keywords": matched})
+        row["context"] = matches[:3]
+        enriched.append(row)
+    return enriched

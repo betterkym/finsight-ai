@@ -1,776 +1,786 @@
-import os
+"""FinSight data layer: DART quarterly statements, ECOS macro data and market beta."""
+
+from __future__ import annotations
+
+import datetime as dt
+import html
 import io
+import os
 import re
 import zipfile
-import datetime
-import requests
+from functools import lru_cache
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
-import xml.etree.ElementTree as ET
-import FinanceDataReader as fdr
-from bs4 import BeautifulSoup
+import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).with_name(".env"))
 
-DART_API_KEY = os.getenv("DART_API_KEY")
+DART_API_KEY = os.getenv("DART_API_KEY", "")
+ECOS_API_KEY = os.getenv("ECOS_API_KEY", "")
+NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "")
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
 DART_BASE = "https://opendart.fss.or.kr/api"
-
-ECOS_API_KEY = os.getenv("ECOS_API_KEY")
 ECOS_BASE = "https://ecos.bok.or.kr/api/StatisticSearch"
+NAVER_NEWS_BASE = "https://openapi.naver.com/v1/search/news.json"
+NAVER_BLOG_BASE = "https://openapi.naver.com/v1/search/blog.json"
 
-NAVER_CLIENT_ID     = os.getenv("NAVER_CLIENT_ID")
-NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET")
-NAVER_TREND_BASE    = "https://openapi.naver.com/v1/datalab/search"
-NAVER_FINANCE_BASE  = "https://finance.naver.com/item/coinfo.naver"
+REPORTS = {1: "11013", 2: "11012", 3: "11014", 4: "11011"}
+REPORT_LABELS = {1: "1Q", 2: "2Q", 3: "3Q", 4: "4Q"}
 
-_NAVER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+# Standard XBRL IDs are preferred; Korean labels are fallbacks for issuer-specific accounts.
+ACCOUNT_ALIASES = {
+    "revenue": ("ifrs-full_Revenue", "매출액", "영업수익", "수익(매출액)"),
+    "operating_profit": ("dart_OperatingIncomeLoss", "영업이익", "영업이익(손실)"),
+    "net_income": ("ifrs-full_ProfitLoss", "당기순이익", "분기순이익", "반기순이익"),
+    "cogs": ("ifrs-full_CostOfSales", "매출원가"),
+    "sga": ("dart_TotalSellingGeneralAdministrativeExpenses", "판매비와관리비", "판매비와관리비용"),
+    "cfo": ("ifrs-full_CashFlowsFromUsedInOperatingActivities", "영업활동현금흐름"),
+    "depreciation": (
+        "ifrs-full_AdjustmentsForDepreciationExpense",
+        "ifrs-full_DepreciationExpense",
+        "감가상각비", "유형자산감가상각비",
     ),
-    "Referer": "https://finance.naver.com",
-    "Accept-Language": "ko-KR,ko;q=0.9",
+    "capex": (
+        "ifrs-full_PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
+        "유형자산의 취득", "유형자산 취득",
+    ),
+    "receivables": ("ifrs-full_TradeAndOtherCurrentReceivables", "매출채권", "매출채권 및 기타채권"),
+    "inventory": ("ifrs-full_Inventories", "재고자산"),
+    "payables": ("ifrs-full_TradeAndOtherCurrentPayables", "ifrs-full_TradePayables", "매입채무", "매입채무 및 기타채무"),
+    "cash": ("ifrs-full_CashAndCashEquivalents", "현금및현금성자산"),
+    "debt": ("ifrs-full_Borrowings", "차입금"),
+    "total_assets": ("ifrs-full_Assets", "자산총계"),
+    "total_liabilities": ("ifrs-full_Liabilities", "부채총계"),
+    "total_equity": ("ifrs-full_Equity", "자본총계"),
+    "current_assets": ("ifrs-full_CurrentAssets", "유동자산"),
+    "current_liabilities": ("ifrs-full_CurrentLiabilities", "유동부채"),
 }
-
-# ECOS 통계코드 상수
-_ECOS_BASE_RATE   = ("722Y001", "A", "0101000")   # 한국은행 기준금리 (연말 기준)
-_ECOS_KTB10Y      = ("721Y001", "A", "5050000")   # 국고채 10년물 수익률 (연평균)
-
-# IS 집계 계정 — MAX(abs) 전략 적용 대상
-IS_ACCOUNTS = {"매출액", "영업이익", "당기순이익"}
-
-# 계정명 표준화 매핑 (기업마다 계정명이 달라서 통일)
-ACCOUNT_MAP = {
-    # ── 매출액 ────────────────────────────────────────────────
-    "매출액": "매출액",
-    "수익(매출액)": "매출액",
-    "영업수익": "매출액",
-    "매출액(영업수익)": "매출액",
-    "순매출액": "매출액",
-    # "매출" 키는 "매출총이익" 오탐 위험이 있으나 MAX(abs) 전략으로 자기보정됨.
-    # 단, 반드시 "매출액" 보다 뒤에 위치해야 함 (exact match 우선이므로 문제 없음).
-    "매출": "매출액",
-
-    # ── 영업이익 ──────────────────────────────────────────────
-    "영업이익": "영업이익",
-    "영업이익(손실)": "영업이익",
-    "영업이익(영업손실)": "영업이익",
-    "영업손익": "영업이익",
-
-    # ── 당기순이익 ────────────────────────────────────────────
-    "당기순이익": "당기순이익",
-    "당기순이익(손실)": "당기순이익",
-    "당기순손익": "당기순이익",
-    "당기순이익(손실)(지배)": "당기순이익",
-    "분기순이익": "당기순이익",
-
-    # ── 자산 ──────────────────────────────────────────────────
-    "자산총계": "자산총계",
-    "자산합계": "자산총계",          # 일부 기업 대체 계정명
-
-    # ── 부채 ──────────────────────────────────────────────────
-    "부채총계": "부채총계",
-    "부채합계": "부채총계",          # 일부 기업 대체 계정명
-
-    # ── 자본 ──────────────────────────────────────────────────
-    "자본총계": "자본총계",
-    "자본합계": "자본총계",          # 일부 기업 대체 계정명
-
-    # ── 영업활동현금흐름 ──────────────────────────────────────
-    "영업활동으로 인한 현금흐름": "영업활동현금흐름",
-    "영업활동현금흐름": "영업활동현금흐름",
-    "영업활동으로인한현금흐름": "영업활동현금흐름",
-    "영업활동으로 인한 순현금흐름": "영업활동현금흐름",
-    "영업활동으로인한순현금흐름": "영업활동현금흐름",
-    # "영업활동" 단독 키: startswith 체인에서 CF 섹션 합계를 포착.
-    # sj_div="CF" 필터가 있어 IS/BS 오염 없음.
-    "영업활동": "영업활동현금흐름",
-
-    # ── CAPEX (유형자산 취득 — 현금유출 기준) ────────────────
-    "유형자산의 취득": "CAPEX",
-    "유형자산 취득": "CAPEX",
-    "유형자산취득": "CAPEX",
-    "유형자산의취득": "CAPEX",
-    "유형자산의 증가": "CAPEX",
-    "유형자산및무형자산의취득": "CAPEX",   # 합산 보고 기업
-    "유형자산 및 무형자산 취득": "CAPEX",  # 공백 변형
-    "유형자산 및 무형자산의 취득": "CAPEX",
-
-    # ── EPS (원/주 단위 — 백만원 변환 없이 저장) ─────────────
-    "기본주당이익": "EPS",
-    "기본주당순이익": "EPS",
-    "기본주당손익": "EPS",            # 손익 표현 기업
-    "기본주당이익(손실)": "EPS",
-    "기본주당손실": "EPS",
-    "보통주 기본주당이익": "EPS",      # 에이피알 2024 등
-    "보통주기본주당이익": "EPS",
-    "보통주 기본주당순이익": "EPS",
-    "보통주 기본주당손익": "EPS",      # 에이피알 2021·2022·2025
-    "보통주기본주당손익": "EPS",
-    "보통주 기본주당이익(손실)": "EPS",
-}
-
-# 재무제표 구분(sj_div)별 수집 대상 — 계정명 중복 방지
-SJ_ACCOUNT_MAP = {
-    "IS":  {"매출액", "영업이익", "당기순이익", "EPS"},
-    "CIS": {"매출액", "영업이익", "당기순이익", "EPS"},
-    "BS":  {"자산총계", "부채총계", "자본총계"},
-    "CF":  {"영업활동현금흐름", "CAPEX"},
-}
-
-# EPS 등 원/주 단위 계정 — get_financials()에서 1,000,000 나누지 않음
-PER_SHARE_ACCOUNTS = {"EPS"}
-
-# 런타임 캐시 — 프로세스 내 최초 1회만 로드
-_CORP_CODE_CACHE: dict[str, str] = {}   # {기업명: corp_code}
-_TICKER_CACHE: dict[str, str] = {}      # {기업명: 주식코드(6자리)}
+FLOW_ACCOUNTS = {"revenue", "operating_profit", "net_income", "cogs", "sga", "cfo", "depreciation", "capex"}
 
 
-def _normalize_account(name: str) -> str | None:
-    """계정명 표준화 — 정확한 매칭 우선, 이후 startswith 매칭"""
-    name = name.strip()
-    if name in ACCOUNT_MAP:
-        return ACCOUNT_MAP[name]
-    for key, val in ACCOUNT_MAP.items():
-        if name.startswith(key):
-            return val
-    return None
-
-
-def _validate_and_fix(data: dict) -> dict:
-    """재무 데이터 기본 검증 및 보정"""
-    # 부채총계 보정: 자산 = 부채 + 자본 (DART 원본 오류 대응)
-    if "자산총계" in data and "자본총계" in data:
-        expected_liab = data["자산총계"] - data["자본총계"]
-        if "부채총계" not in data or data["부채총계"] == data["자산총계"]:
-            # 계산 결과가 음수면 데이터 이상 → 그대로 두고 경고
-            if expected_liab >= 0:
-                data["부채총계"] = expected_liab
-
-    # CAPEX는 현금흐름표에서 음수(유출)로 나오므로 절대값으로 저장
-    if "CAPEX" in data:
-        data["CAPEX"] = abs(data["CAPEX"])
-
-    return data
-
-
-def _load_corp_codes() -> dict[str, str]:
-    """DART 전체 기업 코드 다운로드 → {기업명: corp_code} 딕셔너리 (런타임 캐시)"""
-    global _CORP_CODE_CACHE, _TICKER_CACHE
-    if _CORP_CODE_CACHE:
-        return _CORP_CODE_CACHE
-
-    print("[DART] 기업 코드 목록 로딩 중...")
+def _number(value) -> float | None:
+    if value is None or value == "" or pd.isna(value):
+        return None
     try:
-        resp = requests.get(
-            f"{DART_BASE}/corpCode.xml",
-            params={"crtfc_key": DART_API_KEY},
-            timeout=60,
+        number = float(str(value).replace(",", "").replace("−", "-").strip())
+        return None if pd.isna(number) else number
+    except (TypeError, ValueError):
+        return None
+
+
+def _dart_get(endpoint: str, **params) -> dict:
+    if not DART_API_KEY:
+        raise RuntimeError("DART_API_KEY가 없습니다. .env에 발급 키를 입력해 주세요.")
+    try:
+        response = requests.get(
+            f"{DART_BASE}/{endpoint}", params={"crtfc_key": DART_API_KEY, **params}, timeout=30
         )
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"[DART] 기업 코드 로딩 실패: {e}")
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError("DART 네트워크 요청에 실패했습니다. 연결 상태를 확인해 주세요.") from exc
+    payload = response.json()
+    if payload.get("status") not in ("000", None):
+        raise RuntimeError(payload.get("message", "DART 요청에 실패했습니다."))
+    return payload
+
+
+@lru_cache(maxsize=1)
+def _corp_codes() -> dict[str, dict[str, str]]:
+    if not DART_API_KEY:
         return {}
-
     try:
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            with zf.open("CORPCODE.xml") as f:
-                tree = ET.parse(f)
-    except Exception as e:
-        print(f"[DART] ZIP 파싱 실패: {e}")
-        return {}
+        response = requests.get(
+            f"{DART_BASE}/corpCode.xml", params={"crtfc_key": DART_API_KEY}, timeout=30
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError("DART 기업코드 목록을 불러오지 못했습니다.") from exc
+    import xml.etree.ElementTree as ET
 
-    for item in tree.getroot().findall("list"):
-        name = item.findtext("corp_name", "")
-        stock = item.findtext("stock_code", "").strip()  # 공백 제거 — 비상장사 오인 방지
-        code = item.findtext("corp_code", "")
-        if name and stock and code:  # 상장사만 (stock_code가 실제로 있는 경우)
-            _CORP_CODE_CACHE[name] = code
-            _TICKER_CACHE[name] = stock
-
-    print(f"[DART] 기업 코드 로딩 완료: {len(_CORP_CODE_CACHE)}개")
-    return _CORP_CODE_CACHE
-
-
-def get_corp_code(company_name: str) -> str | None:
-    """기업명으로 DART corp_code 조회"""
-    return _load_corp_codes().get(company_name)
-
-
-def get_stock_ticker(company_name: str) -> str | None:
-    """기업명으로 KRX 6자리 주식코드 조회"""
-    _load_corp_codes()  # _TICKER_CACHE 동시 로드
-    return _TICKER_CACHE.get(company_name)
-
-
-def _get_year_end_price(ticker: str, year: int) -> float | None:
-    """해당 연도 마지막 거래일 종가 (FinanceDataReader)"""
-    try:
-        df = fdr.DataReader(ticker, f"{year}-12-01", f"{year}-12-31")
-        if df.empty:
-            return None
-        return float(df["Close"].iloc[-1])
-    except Exception as e:
-        print(f"  [FDR 오류] {ticker} {year}년: {e}")
-        return None
-
-
-def _get_price_near_date(ticker: str, target_date: datetime.date) -> float | None:
-    """지정 날짜 이전 가장 가까운 거래일의 종가 (최대 10거래일 소급)"""
-    try:
-        start = target_date - datetime.timedelta(days=14)
-        df = fdr.DataReader(ticker, start.strftime("%Y-%m-%d"), target_date.strftime("%Y-%m-%d"))
-        return float(df["Close"].iloc[-1]) if not df.empty else None
-    except Exception as e:
-        print(f"  [FDR 오류] {ticker} {target_date}: {e}")
-        return None
-
-
-def get_market_data(company_name: str, years: list[int] | None = None) -> dict:
-    """
-    기업명 → 연도별 연말 종가 반환 (FinanceDataReader)
-
-    반환 형태:
-    {
-        2024: {"price": 53200.0},  # 원
-        2023: {"price": 73400.0},
-        ...
-    }
-    PER·PBR 계산은 kpi_engine에서 EPS와 결합하여 수행
-    """
-    ticker = get_stock_ticker(company_name)
-    if not ticker:
-        print(f"[FDR] '{company_name}' 티커를 찾을 수 없습니다.")
-        return {}
-
-    if years is None:
-        now = datetime.date.today()
-        latest_year = now.year - 1 if now.month >= 4 else now.year - 2
-        years = list(range(latest_year, latest_year - 5, -1))
-
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        root = ET.fromstring(archive.read("CORPCODE.xml"))
     result = {}
-    for year in years:
-        price = _get_year_end_price(ticker, year)
-        if price is None:
-            print(f"  [{company_name}] {year}년 주가 없음")
-            continue
-        result[year] = {"price": price}
-
+    for item in root.findall("list"):
+        name = (item.findtext("corp_name") or "").strip()
+        if name:
+            result[name] = {
+                "corp_code": item.findtext("corp_code") or "",
+                "stock_code": (item.findtext("stock_code") or "").strip(),
+            }
     return result
 
 
-def get_current_market_data(company_name: str) -> dict:
-    """
-    현재 주가 + 1개월/3개월/6개월 등락률 반환
-
-    반환 형태:
-    {
-        "current_price": 53200.0,  # 원
-        "change_1m": 3.5,          # 1개월 등락률 (%)
-        "change_3m": -2.1,         # 3개월 등락률 (%)
-        "change_6m": 8.7,          # 6개월 등락률 (%)
-    }
-    주가 데이터 없으면 빈 dict {} 반환
-    """
-    ticker = get_stock_ticker(company_name)
-    if not ticker:
-        return {}
-
-    today = datetime.date.today()
-    current_price = _get_price_near_date(ticker, today)
-    if current_price is None:
-        print(f"[FDR] '{company_name}' 현재 주가를 가져올 수 없습니다.")
-        return {}
-
-    result: dict = {"current_price": current_price}
-
-    for months, key in [(1, "change_1m"), (3, "change_3m"), (6, "change_6m")]:
-        past_date  = today - datetime.timedelta(days=months * 30)
-        past_price = _get_price_near_date(ticker, past_date)
-        if past_price and past_price > 0:
-            result[key] = round((current_price - past_price) / past_price * 100, 2)
-        else:
-            result[key] = None
-
-    return result
+def resolve_company(company: str) -> dict[str, str]:
+    """Resolve an exact or close company name to DART and KRX identifiers."""
+    company = company.strip()
+    codes = _corp_codes()
+    if company.isdigit() and len(company) == 6:
+        for name, value in codes.items():
+            if value.get("stock_code") == company:
+                return {"company": name, **value}
+        raise ValueError(f"DART에서 종목코드 '{company}'을(를) 찾지 못했습니다.")
+    if company in codes:
+        return {"company": company, **codes[company]}
+    matches = [(name, value) for name, value in codes.items() if company in name]
+    listed = [(name, value) for name, value in matches if value.get("stock_code")]
+    pool = listed or matches
+    if not pool:
+        raise ValueError(f"DART에서 '{company}'을(를) 찾지 못했습니다.")
+    name, value = sorted(pool, key=lambda item: len(item[0]))[0]
+    return {"company": name, **value}
 
 
-def _fetch_statements(corp_code: str, year: int, fs_div: str) -> pd.DataFrame:
-    """DART fnlttSinglAcntAll API 호출 — 타임아웃·에러 시 빈 DataFrame 반환"""
+def _matches(row: pd.Series, aliases: tuple[str, ...]) -> bool:
+    account_id = str(row.get("account_id", ""))
+    account_nm = str(row.get("account_nm", "")).replace(" ", "")
+    return any(alias == account_id or alias.replace(" ", "") == account_nm for alias in aliases)
+
+
+def _extract_account(rows: pd.DataFrame, key: str, flow: bool) -> tuple[float | None, str]:
+    candidates = rows[rows.apply(lambda row: _matches(row, ACCOUNT_ALIASES[key]), axis=1)]
+    if candidates.empty:
+        return None, "Needs Review"
+    # Consolidated statement rows come first; duplicate subtotal rows come last in many filings.
+    row = candidates.iloc[0]
+    if flow:
+        value = _number(row.get("thstrm_add_amount"))
+        if value is None:
+            value = _number(row.get("thstrm_amount"))
+    else:
+        value = _number(row.get("thstrm_amount"))
+    return value, "DART"
+
+
+def _fetch_report(corp_code: str, year: int, quarter: int) -> dict:
+    rows = _fetch_statement_rows(corp_code, year, quarter)
+    values, quality = {}, {}
+    for key in ACCOUNT_ALIASES:
+        values[key], quality[key] = _extract_account(rows, key, key in FLOW_ACCOUNTS)
+    return {"values": values, "quality": quality}
+
+
+def _fetch_statement_rows(corp_code: str, year: int, quarter: int) -> pd.DataFrame:
+    """Fetch consolidated rows, falling back to separate statements."""
+    rows = pd.DataFrame()
     try:
-        resp = requests.get(
-            f"{DART_BASE}/fnlttSinglAcntAll.json",
-            params={
-                "crtfc_key": DART_API_KEY,
-                "corp_code": corp_code,
-                "bsns_year": str(year),
-                "reprt_code": "11011",  # 사업보고서
-                "fs_div": fs_div,
-            },
+        payload = _dart_get(
+            "fnlttSinglAcntAll.json",
+            corp_code=corp_code,
+            bsns_year=str(year),
+            reprt_code=REPORTS[quarter],
+            fs_div="CFS",
+        )
+        rows = pd.DataFrame(payload.get("list", []))
+    except RuntimeError as exc:
+        # DART status 013 means there is no consolidated statement for this filing.
+        if "조회된" not in str(exc):
+            raise
+    if rows.empty:
+        # Some issuers only publish separate statements.
+        payload = _dart_get(
+            "fnlttSinglAcntAll.json",
+            corp_code=corp_code,
+            bsns_year=str(year),
+            reprt_code=REPORTS[quarter],
+            fs_div="OFS",
+        )
+        rows = pd.DataFrame(payload.get("list", []))
+    return rows
+
+
+def get_quarterly_financials(company: str, quarters: int = 12) -> pd.DataFrame:
+    """Return standalone quarterly values for the latest 8–12 quarters.
+
+    DART interim cash-flow values are cumulative. Flow accounts are therefore converted
+    to standalone quarters by subtracting the prior cumulative filing in the same year.
+    Balance-sheet accounts remain point-in-time values.
+    """
+    info = resolve_company(company)
+    today = dt.date.today()
+    start_year = today.year - (quarters // 4 + 2)
+    records = []
+    for year in range(start_year, today.year + 1):
+        previous_cumulative: dict[str, float | None] = {key: None for key in FLOW_ACCOUNTS}
+        for quarter in range(1, 5):
+            # Do not request clearly future filings.
+            if year == today.year and quarter > (today.month - 1) // 3:
+                continue
+            try:
+                report = _fetch_report(info["corp_code"], year, quarter)
+            except RuntimeError as exc:
+                if "조회된 데이타가 없습니다" in str(exc) or "조회된 데이터가 없습니다" in str(exc):
+                    continue
+                raise
+            values = report["values"].copy()
+            for key in FLOW_ACCOUNTS:
+                cumulative = values.get(key)
+                if cumulative is not None and quarter > 1 and previous_cumulative.get(key) is not None:
+                    values[key] = cumulative - previous_cumulative[key]
+                previous_cumulative[key] = cumulative
+            values.update({
+                "company": info["company"], "stock_code": info["stock_code"],
+                "year": year, "quarter": quarter, "period": f"{year} {REPORT_LABELS[quarter]}",
+                "source": "DART", "needs_review": any(v == "Needs Review" for v in report["quality"].values()),
+            })
+            records.append(values)
+    if not records:
+        raise RuntimeError("선택한 기간의 분기 재무데이터가 없습니다.")
+    return pd.DataFrame(records).sort_values(["year", "quarter"]).tail(quarters).reset_index(drop=True)
+
+
+def get_peer_financials(companies: list[str], quarters: int = 12) -> dict[str, pd.DataFrame]:
+    return {company: get_quarterly_financials(company, quarters) for company in companies if company.strip()}
+
+
+def get_market_beta(stock_code: str, years: int = 2) -> float | None:
+    """Calculate weekly beta against KOSPI from two years of prices."""
+    if not stock_code:
+        return None
+    try:
+        import FinanceDataReader as fdr
+
+        end = dt.date.today()
+        start = end - dt.timedelta(days=365 * years + 30)
+        stock_prices = fdr.DataReader(stock_code, start, end)
+        market_prices = fdr.DataReader("KS11", start, end)
+        # Some FDR/KRX combinations no longer return KS11. KODEX 200 is a liquid proxy.
+        if market_prices.empty or "Close" not in market_prices:
+            market_prices = fdr.DataReader("069500", start, end)
+        stock = stock_prices["Close"].resample("W-FRI").last().pct_change()
+        market = market_prices["Close"].resample("W-FRI").last().pct_change()
+        joined = pd.concat([stock, market], axis=1).dropna()
+        if len(joined) < 30 or joined.iloc[:, 1].var() == 0:
+            return None
+        return float(np.cov(joined.iloc[:, 0], joined.iloc[:, 1], ddof=1)[0, 1] / joined.iloc[:, 1].var())
+    except Exception:
+        return None
+
+
+def get_current_price(stock_code: str) -> float | None:
+    """Return the latest available closing price from FinanceDataReader."""
+    if not stock_code:
+        return None
+    try:
+        import FinanceDataReader as fdr
+
+        end = dt.date.today()
+        start = end - dt.timedelta(days=30)
+        prices = fdr.DataReader(stock_code, start, end)
+        if prices.empty:
+            return None
+        return float(prices["Close"].dropna().iloc[-1])
+    except Exception:
+        return None
+
+
+def _prior_report_periods(year: int, quarter: int, limit: int = 8) -> list[tuple[int, int]]:
+    periods = []
+    current_year, current_quarter = year, quarter
+    for _ in range(limit):
+        periods.append((current_year, current_quarter))
+        current_quarter -= 1
+        if current_quarter == 0:
+            current_year -= 1
+            current_quarter = 4
+    return periods
+
+
+def get_share_snapshot(company: str, year: int, quarter: int) -> dict:
+    """Get total distributed shares, falling back to the latest report with numeric data."""
+    info = resolve_company(company)
+    for report_year, report_quarter in _prior_report_periods(year, quarter):
+        try:
+            payload = _dart_get(
+                "stockTotqySttus.json",
+                corp_code=info["corp_code"],
+                bsns_year=str(report_year),
+                reprt_code=REPORTS[report_quarter],
+            )
+        except RuntimeError as exc:
+            if "조회된" in str(exc):
+                continue
+            raise
+        rows = payload.get("list", [])
+        total = next((row for row in rows if row.get("se") == "합계"), None)
+        if total:
+            distributed = _number(total.get("distb_stock_co"))
+            issued = _number(total.get("istc_totqy"))
+            treasury = _number(total.get("tesstk_co")) or 0.0
+            if distributed is not None and distributed > 0:
+                return {
+                    "shares_outstanding": distributed,
+                    "issued_shares": issued,
+                    "treasury_shares": treasury,
+                    "as_of": total.get("stlm_dt"),
+                    "source": "DART 주식의 총수 현황 — 유통주식수(합계)",
+                    "report_year": report_year,
+                    "report_quarter": report_quarter,
+                }
+    return {
+        "shares_outstanding": None, "issued_shares": None, "treasury_shares": None,
+        "as_of": None, "source": "DART 주식수 Needs Review",
+    }
+
+
+_DEBT_ACCOUNT_IDS = {
+    "ifrs-full_ShorttermBorrowings", "dart_ShortTermBorrowings",
+    "ifrs-full_LongtermBorrowings", "dart_LongTermBorrowingsGross",
+    "ifrs-full_CurrentLeaseLiabilities", "ifrs-full_NoncurrentLeaseLiabilities",
+    "ifrs-full_CurrentPortionOfNoncurrentBorrowings",
+    "dart_CurrentPortionOfLongTermBorrowings", "dart_CurrentPortionOfBonds",
+    "dart_CurrentPortionOfConvertibleBonds", "dart_CurrentPortionOfExchangeableBond",
+    "ifrs-full_BondsIssued", "dart_BondsIssued",
+}
+_DEBT_ACCOUNT_NAMES = {
+    "단기차입금", "장기차입금", "유동성장기차입금", "유동성장기부채",
+    "사채", "유동성사채", "전환사채", "유동성전환사채", "교환사채",
+    "유동성교환사채", "신주인수권부사채", "리스부채", "유동성리스부채", "비유동리스부채",
+}
+
+
+def get_capital_structure(company: str, year: int, quarter: int) -> dict:
+    """Calculate gross debt, net debt, market debt weight and accounting debt ratio."""
+    info = resolve_company(company)
+    rows = _fetch_statement_rows(info["corp_code"], year, quarter)
+    bs = rows[rows.get("sj_div", pd.Series(dtype=str)).eq("BS")].copy()
+    if bs.empty:
+        return {"gross_debt": None, "net_debt": None, "debt_weight": None, "source": "DART Needs Review"}
+
+    bs["_amount"] = bs["thstrm_amount"].map(_number)
+    normalized_name = bs["account_nm"].astype(str).str.replace(" ", "", regex=False)
+    debt_mask = bs["account_id"].isin(_DEBT_ACCOUNT_IDS) | normalized_name.isin(_DEBT_ACCOUNT_NAMES)
+    debt_rows = bs[debt_mask & bs["_amount"].notna()].drop_duplicates(subset=["account_id", "account_nm"])
+    gross_debt = float(debt_rows["_amount"].abs().sum())
+
+    def exact_value(account_id: str) -> float | None:
+        matched = bs[bs["account_id"].eq(account_id)]["_amount"].dropna()
+        return float(matched.iloc[0]) if not matched.empty else None
+
+    cash = exact_value("ifrs-full_CashAndCashEquivalents")
+    liabilities = exact_value("ifrs-full_Liabilities")
+    equity = exact_value("ifrs-full_Equity")
+    net_debt = gross_debt - cash if cash is not None else None
+    accounting_debt_ratio = (
+        liabilities / equity * 100 if liabilities is not None and equity not in (None, 0) else None
+    )
+
+    share_data = get_share_snapshot(info["company"], year, quarter)
+    current_price = get_current_price(info["stock_code"])
+    shares = share_data.get("shares_outstanding")
+    market_cap = current_price * shares if current_price is not None and shares is not None else None
+    if market_cap is not None and gross_debt + market_cap > 0:
+        debt_weight = gross_debt / (gross_debt + market_cap) * 100
+        weight_source = "DART 이자부채 + FDR 최근 종가 시가총액"
+    elif equity is not None and gross_debt + equity > 0:
+        debt_weight = gross_debt / (gross_debt + equity) * 100
+        weight_source = "DART 장부자본 fallback"
+    else:
+        debt_weight, weight_source = None, "Needs Review"
+
+    return {
+        **share_data,
+        "company": info["company"], "stock_code": info["stock_code"],
+        "cash": cash, "gross_debt": gross_debt, "net_debt": net_debt,
+        "total_liabilities": liabilities, "total_equity": equity,
+        "accounting_debt_ratio": accounting_debt_ratio,
+        "current_price": current_price, "market_cap": market_cap,
+        "debt_weight": debt_weight, "debt_weight_source": weight_source,
+        "share_source": share_data.get("source"),
+        "debt_components": [
+            {"account": row["account_nm"], "amount": float(row["_amount"])}
+            for _, row in debt_rows.iterrows()
+        ],
+        "source": "DART 최신 재무상태표 + 주식총수 + FinanceDataReader",
+    }
+
+
+def get_macro_snapshot() -> dict[str, float | None]:
+    """Fetch current DCF macro inputs from ECOS, with explicit fallbacks."""
+    fallback = {"risk_free_rate": 3.2, "usd_krw": None, "gdp_growth": 2.0, "erp": 6.0}
+    if not ECOS_API_KEY:
+        return {**fallback, "source": "Fallback — ECOS key missing"}
+
+    def latest(stat: str, cycle: str, item: str, unit: str = "?") -> float | None:
+        end = dt.date.today()
+        start = end - dt.timedelta(days=550)
+        if cycle == "D":
+            s, e = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+        elif cycle == "M":
+            s, e = start.strftime("%Y%m"), end.strftime("%Y%m")
+        else:
+            s, e = str(end.year - 3), str(end.year)
+        url = f"{ECOS_BASE}/{ECOS_API_KEY}/json/kr/1/100/{stat}/{cycle}/{s}/{e}/{item}/{unit}"
+        try:
+            rows = requests.get(url, timeout=20).json()["StatisticSearch"]["row"]
+            return _number(rows[-1]["DATA_VALUE"])
+        except Exception:
+            return None
+
+    def cpi_yoy() -> float | None:
+        end = dt.date.today()
+        start = end - dt.timedelta(days=500)
+        url = f"{ECOS_BASE}/{ECOS_API_KEY}/json/kr/1/100/901Y009/M/{start.strftime('%Y%m')}/{end.strftime('%Y%m')}/0"
+        try:
+            rows = requests.get(url, timeout=20).json()["StatisticSearch"]["row"]
+            series = [(_number(r["DATA_VALUE"])) for r in rows if _number(r.get("DATA_VALUE")) is not None]
+            if len(series) >= 13 and series[-13]:
+                return round((series[-1] / series[-13] - 1) * 100, 2)
+        except Exception:
+            return None
+        return None
+
+    rf = latest("817Y002", "D", "010210000")
+    fx = latest("731Y001", "D", "0000001")
+    gdp = latest("200Y104", "A", "1400", "?")
+    cpi = cpi_yoy()
+    return {
+        "risk_free_rate": rf if rf is not None else fallback["risk_free_rate"],
+        "usd_krw": fx, "gdp_growth": gdp if gdp is not None else fallback["gdp_growth"],
+        "cpi_growth": cpi if cpi is not None else 2.5,
+        "erp": fallback["erp"], "source": "ECOS + KICPA reference/fallback",
+    }
+
+
+def get_peer_beta_inputs(peer_names: list[str]) -> list[dict]:
+    """Resolve peer levered betas and a debt/equity proxy for WACC unlever/relever."""
+    results = []
+    for name in peer_names:
+        try:
+            info = resolve_company(name)
+        except Exception:
+            continue
+        beta = get_market_beta(info.get("stock_code", ""))
+        if beta is None:
+            continue
+        de = None
+        try:
+            today = dt.date.today()
+            quarter = max(1, (today.month - 1) // 3)
+            for ry, rq in _prior_report_periods(today.year, quarter, limit=4):
+                rows = _fetch_statement_rows(info["corp_code"], ry, rq)
+                bs = rows[rows.get("sj_div", pd.Series(dtype=str)).eq("BS")]
+                if bs.empty:
+                    continue
+                liabilities = bs[bs["account_id"].eq("ifrs-full_Liabilities")]["thstrm_amount"].map(_number).dropna()
+                equity = bs[bs["account_id"].eq("ifrs-full_Equity")]["thstrm_amount"].map(_number).dropna()
+                if not liabilities.empty and not equity.empty and equity.iloc[0]:
+                    de = float(liabilities.iloc[0] / equity.iloc[0] * 100)
+                    break
+        except Exception:
+            de = None
+        results.append({"name": info["company"], "levered_beta": float(beta), "de_ratio": de})
+    return results
+
+
+PEER_GROUPS = {
+    "Food & Beverage": ["농심", "삼양식품", "오뚜기", "CJ제일제당", "대상"],
+    "Beauty & Personal Care": ["아모레퍼시픽", "LG생활건강", "에이피알", "코스맥스", "한국콜마"],
+    "Retail": ["신세계", "현대백화점", "롯데쇼핑", "BGF리테일", "GS리테일"],
+}
+
+
+def recommend_peers(company: str, limit: int = 2) -> dict:
+    """Return transparent, curated sector peers for the POC universe."""
+    resolved = company.strip()
+    known_names = {member for members in PEER_GROUPS.values() for member in members}
+    if resolved not in known_names:
+        try:
+            resolved = resolve_company(company)["company"]
+        except Exception:
+            pass
+    for group, members in PEER_GROUPS.items():
+        if resolved in members:
+            return {
+                "company": resolved,
+                "peer_group": group,
+                "peers": [member for member in members if member != resolved][:limit],
+                "method": "Curated listed-company peer set; business model and end-market similarity",
+            }
+    return {"company": resolved, "peer_group": "Unclassified", "peers": [], "method": "Manual review required"}
+
+
+def get_recent_disclosures(company: str, days: int = 365, limit: int = 30) -> list[dict]:
+    """Fetch recent DART filing titles for internal root-cause evidence."""
+    info = resolve_company(company)
+    end = dt.date.today()
+    start = end - dt.timedelta(days=days)
+    payload = _dart_get(
+        "list.json",
+        corp_code=info["corp_code"],
+        bgn_de=start.strftime("%Y%m%d"),
+        end_de=end.strftime("%Y%m%d"),
+        page_no=1,
+        page_count=min(limit, 100),
+        sort="date",
+        sort_mth="desc",
+    )
+    return [
+        {
+            "rcept_no": row.get("rcept_no"),
+            "date": row.get("rcept_dt"),
+            "title": row.get("report_nm"),
+            "filer": row.get("flr_nm"),
+            "report_type": row.get("pblntf_ty"),
+            "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={row.get('rcept_no')}",
+            "source": "DART 공시",
+        }
+        for row in payload.get("list", [])[:limit]
+    ]
+
+
+DISCLOSURE_EVIDENCE_KEYWORDS = [
+    "신규시설투자", "시설투자", "공급계약", "영업정지", "대량보유", "지분", "기업설명회",
+    "원재료", "가격", "수출", "해외", "공장", "증설", "생산능력", "환율", "재고",
+]
+
+
+def _dart_document_text(rcept_no: str) -> str:
+    """Return plain text from a DART filing package, bounded for causal evidence search."""
+    try:
+        response = requests.get(
+            f"{DART_BASE}/document.xml",
+            params={"crtfc_key": DART_API_KEY, "rcept_no": rcept_no},
             timeout=30,
         )
-        data = resp.json()
-    except Exception as e:
-        print(f"  [API 오류] {year}년 {fs_div}: {e}")
-        return pd.DataFrame()
-
-    if data.get("status") != "000" or not data.get("list"):
-        return pd.DataFrame()
-    return pd.DataFrame(data["list"])
-
-
-def get_financials(company_name: str, years: int = 5) -> dict:
-    """
-    기업명 입력 → 최근 N개년 재무 데이터 반환
-
-    반환 형태:
-    {
-        2024: {"매출액": int, "영업이익": int, ...},  # 단위: 백만원
-        2023: {...},
-        ...
-    }
-    기업명이 없거나 데이터 수집 실패 시 빈 dict {} 반환
-    """
-    corp_code = get_corp_code(company_name)
-    if not corp_code:
-        print(f"[DART] '{company_name}' corp_code를 찾을 수 없습니다.")
-        return {}
-
-    # 직전 연도 기준 — 사업보고서는 3~4월에 공시되므로 5월 이후면 전년도 이용 가능
-    now = datetime.date.today()
-    latest_year = now.year - 1 if now.month >= 4 else now.year - 2
-    result = {}
-
-    for year in range(latest_year, latest_year - years, -1):
-        # 연결재무제표 우선, 없으면 개별재무제표
-        df = _fetch_statements(corp_code, year, "CFS")
-        if df.empty:
-            df = _fetch_statements(corp_code, year, "OFS")
-        if df.empty:
-            print(f"  [{company_name}] {year}년 데이터 없음")
-            continue
-
-        # 후보값 수집: {account: [val1, val2, ...]}
-        candidates: dict[str, list[int]] = {}
-        for _, row in df.iterrows():
-            sj_div = str(row.get("sj_div", ""))
-            allowed = SJ_ACCOUNT_MAP.get(sj_div, set())
-            if not allowed:
-                continue
-            account = _normalize_account(str(row.get("account_nm", "")))
-            if not account or account not in allowed:
-                continue
-            raw = str(row.get("thstrm_amount", "")).replace(",", "").strip()
-            if not raw or raw in ("-", ""):
-                continue
-            try:
-                if account in PER_SHARE_ACCOUNTS:
-                    value = int(raw)          # 원/주 — 단위 변환 없음
-                else:
-                    value = int(raw) // 1_000_000  # 원 → 백만원
-                candidates.setdefault(account, []).append(value)
-            except ValueError:
-                continue
-
-        # IS 계정은 MAX(abs) — 집계값의 절대값이 서브항목보다 항상 크므로 양/음수 모두 정확
-        # BS·CF 계정은 첫 번째 값 사용 (집계항목이 먼저 등장)
-        # EPS는 IS에 속하므로 MAX(abs) 적용 — 하위 EPS 항목 오인 방지
-        year_data = {}
-        for account, values in candidates.items():
-            if account in IS_ACCOUNTS or account in PER_SHARE_ACCOUNTS:
-                year_data[account] = max(values, key=abs)
-            else:
-                year_data[account] = values[0]
-
-        if year_data:
-            result[year] = _validate_and_fix(year_data)
-
-    return result
-
-
-def _ecos_annual(stat_code: str, item_code: str, start: int, end: int) -> dict[int, float]:
-    """ECOS StatisticSearch 연간 데이터 → {year: value} 딕셔너리"""
-    row_count = max(end - start + 1, 1)   # 요청 연도 수만큼 동적 산정
-    try:
-        url = (
-            f"{ECOS_BASE}/{ECOS_API_KEY}/json/kr/1/{row_count}"
-            f"/{stat_code}/A/{start}/{end}/{item_code}"
-        )
-        resp = requests.get(url, timeout=15)
-        rows = resp.json().get("StatisticSearch", {}).get("row", [])
-    except Exception as e:
-        print(f"  [ECOS 오류] {stat_code}/{item_code}: {e}")
-        return {}
-    result = {}
-    for row in rows:
-        try:
-            result[int(row["TIME"])] = float(row["DATA_VALUE"])
-        except (KeyError, ValueError):
-            continue
-    return result
-
-
-def get_macro_data(years: list[int] | None = None) -> dict:
-    """
-    한국 거시 지표 수집 — ECOS(기준금리·국고채10년물) + FDR(USD/KRW 연말 종가)
-
-    반환 형태:
-    {
-        2024: {"base_rate": 3.0, "ktb10y": 3.218, "usd_krw": 1472.8},
-        2023: {...},
-        ...
-    }
-    base_rate: 연말 기준금리 (%), ktb10y: 국고채 10년물 연평균 수익률 (%), usd_krw: 연말 환율 (원)
-    """
-    if years is None:
-        now = datetime.date.today()
-        latest_year = now.year - 1 if now.month >= 4 else now.year - 2
-        years = list(range(latest_year, latest_year - 5, -1))
-
-    start, end = min(years), max(years)
-
-    stat_code_br, _, item_code_br = _ECOS_BASE_RATE
-    stat_code_kb, _, item_code_kb = _ECOS_KTB10Y
-
-    base_rates = _ecos_annual(stat_code_br, item_code_br, start, end)
-    ktb10y     = _ecos_annual(stat_code_kb, item_code_kb, start, end)
-
-    result = {}
-    for year in years:
-        # USD/KRW: FDR 연말 마지막 거래일 종가
-        try:
-            df_fx = fdr.DataReader("USD/KRW", f"{year}-12-01", f"{year}-12-31")
-            usd_krw = float(df_fx["Close"].iloc[-1]) if not df_fx.empty else None
-        except Exception as e:
-            print(f"  [FDR 환율 오류] {year}년: {e}")
-            usd_krw = None
-
-        entry: dict = {}
-        if year in base_rates:
-            entry["base_rate"] = base_rates[year]
-        if year in ktb10y:
-            entry["ktb10y"] = ktb10y[year]
-        if usd_krw is not None:
-            entry["usd_krw"] = round(usd_krw, 2)
-
-        # KOSPI(KS11), NASDAQ(IXIC) 연말 종가
-        for idx_ticker, idx_key in [("KS11", "kospi"), ("IXIC", "nasdaq")]:
-            try:
-                df_idx = fdr.DataReader(idx_ticker, f"{year}-12-01", f"{year}-12-31")
-                val = float(df_idx["Close"].iloc[-1]) if not df_idx.empty else None
-            except Exception as e:
-                print(f"  [FDR 지수 오류] {idx_ticker} {year}년: {e}")
-                val = None
-            if val is not None:
-                entry[idx_key] = round(val, 2)
-
-        if entry:
-            result[year] = entry
-
-    return result
-
-
-def get_naver_search_trend(keyword: str, start_date: str, end_date: str) -> dict:
-    """
-    네이버 데이터랩 검색 트렌드 API (Week 3 구현 예정)
-
-    Args:
-        keyword: 검색 키워드 (기업명 또는 브랜드명)
-        start_date: "YYYY-MM-DD" 형식
-        end_date:   "YYYY-MM-DD" 형식
-
-    반환 형태:
-    {
-        "YYYY-MM": 검색량_지수,  # 0~100 (상대 지수)
-        ...
-    }
-
-    API 호출 예시 (Week 3):
-        POST https://openapi.naver.com/v1/datalab/search
-        Headers: X-Naver-Client-Id, X-Naver-Client-Secret
-        Body: {
-            "startDate": start_date, "endDate": end_date, "timeUnit": "month",
-            "keywords": [{"name": keyword, "param": [keyword]}]
-        }
-    """
-    raise NotImplementedError("get_naver_search_trend: Week 3 구현 예정")
-
-
-# ── 네이버금융 컨센서스 스크래퍼 ──────────────────────────────────────────────
-
-def _parse_rating_kr(text: str) -> str:
-    """한국어 투자의견 → BUY / HOLD / SELL"""
-    if any(w in text for w in ["강력매수", "적극매수", "비중확대", "매수"]):
-        return "BUY"
-    if any(w in text for w in ["매도", "비중축소"]):
-        return "SELL"
-    return "HOLD"
-
-
-def _clean_num(text: str) -> float | None:
-    """숫자 문자열 정제 → float (쉼표·단위·공백 제거)"""
-    if not text:
-        return None
-    text = text.strip()
-    if text in ("-", "N/A", "NA", "n/a", "—", ""):
-        return None
-    cleaned = re.sub(r"[,\s원배%]", "", text)
-    try:
-        return float(cleaned) if cleaned else None
-    except ValueError:
-        return None
-
-
-def _naver_soup(ticker: str, target: str | None = None) -> BeautifulSoup | None:
-    """네이버금융 coinfo 페이지 요청 → BeautifulSoup"""
-    params: dict = {"code": ticker}
-    if target:
-        params["target"] = target
-    try:
-        resp = requests.get(NAVER_FINANCE_BASE, params=params,
-                            headers=_NAVER_HEADERS, timeout=15)
-        resp.encoding = resp.apparent_encoding or "euc-kr"
-        return BeautifulSoup(resp.text, "lxml")
-    except Exception as e:
-        print(f"  [Naver] 요청 실패 (target={target}): {e}")
-        return None
-
-
-_WISEREPORT_BASE = "https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx"
-
-
-def _wisereport_text(ticker: str) -> str:
-    """WiseReport 기업개요 페이지 텍스트 반환"""
-    try:
-        resp = requests.get(
-            _WISEREPORT_BASE, params={"cmp_cd": ticker},
-            headers=_NAVER_HEADERS, timeout=15,
-        )
-        resp.encoding = resp.apparent_encoding or "utf-8"
-        soup = BeautifulSoup(resp.text, "lxml")
-        return soup.get_text(separator=" ", strip=True)
-    except Exception as e:
-        print(f"  [WiseReport] 요청 실패: {e}")
+        response.raise_for_status()
+        chunks = []
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            for name in archive.namelist()[:20]:
+                if not name.lower().endswith((".xml", ".html", ".htm", ".txt")):
+                    continue
+                raw = archive.read(name)
+                decoded = raw.decode("utf-8", errors="ignore")
+                text = re.sub(r"<[^>]+>", " ", decoded)
+                text = html.unescape(re.sub(r"\s+", " ", text)).strip()
+                if text:
+                    chunks.append(text)
+        return " ".join(chunks)[:500_000]
+    except Exception:
         return ""
 
 
-def _parse_opinion(ticker: str) -> dict:
-    """
-    WiseReport → 투자의견·목표주가·EPS·PER·애널리스트 수 파싱
-
-    페이지 내 컨센서스 블록 형태:
-      "추정기관수  {score}  {target_price}  {eps}  {per}  {count}"
-    예: "추정기관수 4.04 390,417 42,966 6.81 24"
-    """
-    result: dict = {}
-    text = _wisereport_text(ticker)
-    if not text:
-        return result
-
-    # 컨센서스 요약 블록 — 목표주가·EPS·PER·기관수 한 번에 파싱
-    m = re.search(
-        r"추정기관수\s+([\d.]+)\s+([\d,]+)\s+([\d,]+)\s+([\d.]+)\s+(\d+)",
-        text,
-    )
-    if m:
-        score        = float(m.group(1))
-        target_price = _clean_num(m.group(2))
-        forward_eps  = _clean_num(m.group(3))
-        forward_per  = float(m.group(4))
-        analyst_cnt  = int(m.group(5))
-
-        if target_price:
-            result["target_price"]  = target_price
-        if forward_eps:
-            result["forward_eps"]   = forward_eps
-        result["forward_per"]       = forward_per
-        result["analyst_count"]     = analyst_cnt
-        # 투자의견: 1(강력매도)~5(강력매수) 스케일 → BUY/HOLD/SELL
-        result["rating"] = "BUY" if score >= 3.5 else "HOLD" if score >= 2.5 else "SELL"
-
-    return result
+def enrich_disclosures_with_snippets(disclosures: list[dict], limit: int = 4) -> list[dict]:
+    """Attach short primary-source snippets to the most decision-relevant filings."""
+    enriched = [dict(item) for item in disclosures]
+    candidates = [
+        item for item in enriched
+        if any(keyword in str(item.get("title", "")) for keyword in DISCLOSURE_EVIDENCE_KEYWORDS)
+    ][:limit]
+    for item in candidates:
+        text = _dart_document_text(str(item.get("rcept_no") or ""))
+        if not text:
+            continue
+        positions = [text.find(keyword) for keyword in DISCLOSURE_EVIDENCE_KEYWORDS if text.find(keyword) >= 0]
+        if positions:
+            start = max(0, min(positions) - 120)
+            item["description"] = text[start:start + 700]
+            item["evidence_level"] = "Primary filing text"
+    return enriched
 
 
-def get_naver_consensus(
-    company_name: str,
-    year: int | None = None,
-    prev_revenue_mil: int | None = None,
-) -> dict:
-    """
-    네이버금융 컨센서스 자동 수집 — 기업명만 넣으면 자동으로 가져옴
-
-    Args:
-        company_name    : 기업명 (한국어)
-        year            : 예상 연도 (None이면 올해+1 자동 설정)
-        prev_revenue_mil: 전년도 실제 매출액 (백만원) — expected_revenue_growth 계산용
-                          get_financials() 결과의 최근 연도 "매출액" 값을 넘기면 됨
-
-    반환 형태:
-    {
-        "company": "삼성전자",
-        "year": 2025,
-        "target_price": 82000.0,          # 원
-        "rating": "BUY",
-        "analyst_count": 32,
-        "forward_eps": 4850.0,            # 원/주
-        "forward_per": 11.2,              # 배
-        "expected_revenue_growth": 8.5,   # % (prev_revenue_mil 제공 시)
-        "expected_op_margin": 15.2,       # %
-        "expected_net_income": 26800000,  # 백만원
-    }
-    스크래핑 실패 항목은 키 자체가 없음 (None 아닌 absent)
-    """
-    ticker = get_stock_ticker(company_name)
-    if not ticker:
-        print(f"[Consensus] '{company_name}' 티커 없음")
-        return {}
-
-    if year is None:
-        today = datetime.date.today()
-        # 4월 이후면 전년도 실적 공시 완료 → 당해 연도가 forward
-        latest_actual = today.year - 1 if today.month >= 4 else today.year - 2
-        year = latest_actual + 1
-
-    print(f"[Consensus] {company_name} ({ticker}) {year}E 수집 중...")
-
-    result: dict = {"company": company_name, "year": year}
-    result.update(_parse_opinion(ticker))
-
-    found = [k for k, v in result.items() if k not in ("company", "year")]
-    print(f"  수집 항목: {found if found else '없음 — 페이지 구조 확인 필요'}")
-    return result
+# SG&A footnote line items → fixed/variable/labour/bad-debt buckets, matching the
+# decomposition the reference DCF builds. Depreciation lines are excluded (handled in D&A).
+_SGA_BUCKETS = {
+    "labor": ["급여", "임금", "퇴직급여", "복리후생비"],
+    "variable": ["지급수수료", "여비교통비", "수도광열비", "임차료", "소모품비", "수출비용", "용역비", "판매수수료"],
+    "fixed": ["제세공과금", "세금과공과", "운반비", "운송보관료", "광고선전비", "판매촉진비", "경상개발비", "연구비", "기타판매비와관리비", "기타"],
+    "baddebt": ["대손상각비"],
+}
+_SGA_SKIP = ["감가상각비", "무형자산상각비", "상각비"]
 
 
-def parse_consensus_csv(filepath: str, company_name: str | None = None) -> dict:
-    """
-    consensus_template.csv 파싱 → {year: {field: value}} 딕셔너리
+def get_sga_breakdown(company: str, year: int | None = None) -> dict | None:
+    """Parse the 판매비와관리비 footnote and bucket it into labour/variable/fixed/bad-debt.
 
-    Args:
-        filepath    : CSV 파일 경로
-        company_name: 기업명 필터 (None이면 첫 번째 기업 데이터 반환)
-                      CSV에 여러 기업이 있으면 반드시 지정 필요
-
-    CSV 컬럼:
-      company, year, forward_eps, forward_per, target_price,
-      expected_revenue_growth, expected_op_margin, expected_net_income,
-      rating, analyst_count
-
-    반환 형태:
-    {
-        2026: {
-            "forward_eps": 42966.0,
-            "target_price": 390417.0,
-            "rating": "BUY",
-            "analyst_count": 24,
-            ...
-        }
-    }
-    빈 셀은 해당 키를 포함하지 않음
+    Returns ``None`` on any doubt (few matches, implausible shares, parse error) so the
+    caller falls back to curated/default weights — this can only improve coverage, never
+    inject a wrong split.
     """
     try:
-        df = pd.read_csv(filepath)
-    except Exception as e:
-        print(f"[Consensus] CSV 파싱 실패: {e}")
-        return {}
+        info = resolve_company(company)
+        disclosures = get_recent_disclosures(company, days=500, limit=40)
+        # The itemised 판관비 table lives in the annual 사업보고서; quarterly/half reports
+        # usually omit it. Try annual first, then fall back to others.
+        ordered = (
+            [d for d in disclosures if "사업보고서" in str(d.get("title", ""))]
+            + [d for d in disclosures if "반기보고서" in str(d.get("title", ""))]
+            + [d for d in disclosures if "분기보고서" in str(d.get("title", ""))]
+        )
+        # '광고선전비'/'운송보관료' appear only in the SG&A note, never on the balance
+        # sheet, so they anchor a clean window and keep '급여자산' etc. out.
+        label_re = {
+            label: re.compile(
+                (r"급여(?!자산|채무|부채|충당)" if label == "급여" else re.escape(label))
+                + r"[^0-9\-]{0,14}([0-9]{1,3}(?:,[0-9]{3}){1,3})"
+            )
+            for labels in _SGA_BUCKETS.values() for label in labels if label not in _SGA_SKIP
+        }
+        amounts: dict[str, float] = {}
+        report = None
+        for candidate in ordered[:4]:
+            text = _dart_document_text(str(candidate.get("rcept_no") or ""))
+            if not text or "광고선전비" not in text:
+                continue
+            anchor = text.find("광고선전비")
+            window = text[max(0, anchor - 2800): anchor + 2800]
+            found: dict[str, float] = {}
+            for label, rx in label_re.items():
+                if label in found:
+                    continue
+                m = rx.search(window)
+                if m:
+                    found[label] = float(m.group(1).replace(",", ""))
+            if len(found) >= 6:
+                amounts, report = found, candidate
+                break
+        if not amounts or report is None:
+            return None
+        buckets = {b: 0.0 for b in _SGA_BUCKETS}
+        for bucket, labels in _SGA_BUCKETS.items():
+            for label in labels:
+                buckets[bucket] += amounts.get(label, 0.0)
+        total = sum(buckets.values())
+        # A real listed staple's SG&A note is hundreds of 억 (천원 units); a far smaller
+        # sum signals a partial parse or wrong unit column — reject rather than mislead.
+        if total < 1e7:  # 100억 in 천원
+            return None
+        shares = {b: buckets[b] / total for b in buckets}
+        # Sanity gate: a clean SG&A note has labour and fixed each in a believable band.
+        if not (0.10 <= shares["labor"] <= 0.55 and 0.10 <= shares["fixed"] <= 0.65 and shares["variable"] <= 0.60):
+            return None
+        return {
+            "labor": round(shares["labor"], 4), "variable": round(shares["variable"], 4),
+            "fixed": round(shares["fixed"], 4), "baddebt": round(shares["baddebt"], 4),
+            "matched_items": len(amounts), "total_eok": round(total / 1e5, 1),
+            "source": f"DART 판관비 주석 자동 추출 ({report.get('title', '')[:24]}, {len(amounts)}개 항목)",
+        }
+    except Exception:
+        return None
 
-    # company_name 필터 적용
-    if company_name:
-        df = df[df["company"] == company_name]
-    elif "company" in df.columns and df["company"].nunique() > 1:
-        first = df["company"].iloc[0]
-        print(f"[Consensus] company_name 미지정 — '{first}' 데이터 사용 (총 {df['company'].nunique()}개 기업)")
-        df = df[df["company"] == first]
 
-    numeric_cols = [
-        "forward_eps", "forward_per", "target_price",
-        "expected_revenue_growth", "expected_op_margin", "expected_net_income",
+def _plain_html(value: str | None) -> str:
+    text = re.sub(r"<[^>]+>", "", value or "")
+    return html.unescape(text).strip()
+
+
+def _naver_search(endpoint: str, query: str, limit: int) -> list[dict]:
+    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
+        return []
+    response = requests.get(
+        endpoint,
+        params={"query": query, "display": min(limit, 100), "sort": "date"},
+        headers={
+            "X-Naver-Client-Id": NAVER_CLIENT_ID,
+            "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    items = response.json().get("items", [])
+    source = "Naver News" if endpoint == NAVER_NEWS_BASE else "Naver Blog"
+    return [
+        {
+            "date": item.get("pubDate"),
+            "title": _plain_html(item.get("title")),
+            "description": _plain_html(item.get("description")),
+            "url": item.get("originallink") or item.get("link"),
+            "source": source,
+            "query": query,
+            "evidence_level": "Reported context" if source == "Naver News" else "Unverified interpretation",
+        }
+        for item in items[:limit]
     ]
-    result: dict = {}
-    for _, row in df.iterrows():
-        year_raw = row.get("year")
-        if pd.isna(year_raw):
-            continue
-        year = int(year_raw)
-        entry: dict = {}
-        for col in numeric_cols:
-            val = row.get(col)
-            if pd.notna(val):
-                entry[col] = float(val)
-        rating = row.get("rating")
-        if pd.notna(rating):
-            entry["rating"] = str(rating).strip().upper()
-        count = row.get("analyst_count")
-        if pd.notna(count):
-            entry["analyst_count"] = int(count)
-        if entry:
-            result[year] = entry
 
+
+def _dedupe_context(items: list[dict], limit: int) -> list[dict]:
+    seen, result = set(), []
+    for item in items:
+        key = item.get("url") or item.get("title")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+        if len(result) >= limit:
+            break
     return result
 
 
-if __name__ == "__main__":
-    companies = ["삼성전자", "농심", "에이피알"]
-    for company in companies:
-        print(f"\n{'='*50}")
-        print(f"[{company}] 재무 데이터 수집 중...")
-        data = get_financials(company)
-        if not data:
-            print("  데이터 없음")
-            continue
-        for year, metrics in sorted(data.items()):
-            print(f"  {year}년:")
-            for k, v in metrics.items():
-                print(f"    {k}: {v:,} 백만원")
+def get_external_news_context(company: str, limit: int = 24) -> list[dict]:
+    """Search decision themes instead of returning a generic company-news feed."""
+    queries = [
+        f"{company} 실적 전망", f"{company} 수출 해외 공장",
+        f"{company} 원가 가격 경쟁", f"{company} 수급 국민연금 외국인",
+    ]
+    items = []
+    for query in queries:
+        items.extend(_naver_search(NAVER_NEWS_BASE, query, max(4, limit // len(queries))))
+    return _dedupe_context(items, limit)
 
-    print("\n" + "="*50)
-    print("[시장 데이터 테스트]")
-    for company in companies:
-        print(f"\n[{company}] 주가 수집 중...")
-        mkt = get_market_data(company)
-        if not mkt:
-            print("  데이터 없음")
-            continue
-        for year, d in sorted(mkt.items()):
-            print(f"  {year}년: 연말 종가 {d['price']:,.0f}원")
 
-    print("\n" + "="*50)
-    print("[현재 시장 데이터 테스트]")
-    for company in companies:
-        print(f"\n[{company}] 현재 주가 수집 중...")
-        curr = get_current_market_data(company)
-        if not curr:
-            print("  데이터 없음")
-            continue
-        print(f"  현재 주가: {curr['current_price']:,.0f}원")
-        for key, label in [("change_1m", "1M"), ("change_3m", "3M"), ("change_6m", "6M")]:
-            val = curr.get(key)
-            if val is None:
-                print(f"  {label}: N/A")
-            else:
-                sign = "+" if val > 0 else ""
-                print(f"  {label}: {sign}{val:.2f}%")
+def get_external_blog_context(company: str, limit: int = 10) -> list[dict]:
+    """Fetch explicitly labeled, unverified interpretations for expectation-gap discovery."""
+    queries = [f"{company} 주가 이유", f"{company} 실적 주가 괴리"]
+    items = []
+    for query in queries:
+        items.extend(_naver_search(NAVER_BLOG_BASE, query, max(4, limit // len(queries))))
+    return _dedupe_context(items, limit)
 
-    print("\n" + "="*50)
-    print("[거시 데이터 테스트]")
-    macro = get_macro_data()
-    for year, d in sorted(macro.items()):
-        print(f"  {year}년: 기준금리={d.get('base_rate')}% | "
-              f"국고채10Y={d.get('ktb10y')}% | "
-              f"USD/KRW={d.get('usd_krw')}원 | "
-              f"KOSPI={d.get('kospi')} | NASDAQ={d.get('nasdaq')}")
 
-    print("\n" + "="*50)
-    print("[컨센서스 스크래핑 테스트]")
-    for company in companies:
-        fin = get_financials(company, years=1)
-        prev_rev = None
-        if fin:
-            latest_year = max(fin.keys())
-            prev_rev = fin[latest_year].get("매출액")
-        print(f"\n[{company}]")
-        result = get_naver_consensus(company, prev_revenue_mil=prev_rev)
-        for k, v in result.items():
-            if k in ("company", "year"):
-                continue
-            print(f"  {k}: {v}")
+def get_major_shareholding_changes(company: str, limit: int = 12) -> list[dict]:
+    """Return DART 5% ownership reports with explicit share and ratio changes."""
+    info = resolve_company(company)
+    try:
+        payload = _dart_get("majorstock.json", corp_code=info["corp_code"])
+    except RuntimeError as exc:
+        if "조회된" in str(exc):
+            return []
+        raise
+    rows = []
+    for item in payload.get("list", [])[:limit]:
+        rows.append({
+            "date": item.get("rcept_dt"), "reporter": item.get("repror"),
+            "report_type": item.get("report_tp"), "shares": _number(item.get("stkqy")),
+            "share_change": _number(item.get("stkqy_irds")), "ratio": _number(item.get("stkrt")),
+            "ratio_change": _number(item.get("stkrt_irds")), "reason": item.get("report_resn"),
+            "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={item.get('rcept_no')}",
+            "source": "DART 대량보유 상황보고", "evidence_level": "Primary filing data",
+        })
+    return rows
+
+
+def get_market_snapshot(stock_code: str) -> dict:
+    """Return price drawdown, momentum and volume regime used for expectation-gap analysis."""
+    if not stock_code:
+        return {}
+    try:
+        import FinanceDataReader as fdr
+
+        end = dt.date.today()
+        prices = fdr.DataReader(stock_code, end - dt.timedelta(days=430), end)
+        close = prices["Close"].dropna()
+        if close.empty:
+            return {}
+        current = float(close.iloc[-1])
+        window_52 = close.tail(252)
+        result = {
+            "current_price": current, "high_52w": float(window_52.max()), "low_52w": float(window_52.min()),
+            "drawdown_52w_high": (current / float(window_52.max()) - 1) * 100,
+            "position_52w": (current - float(window_52.min())) / (float(window_52.max()) - float(window_52.min())) * 100 if window_52.max() != window_52.min() else None,
+            "source": "FinanceDataReader/KRX", "as_of": str(close.index[-1].date()),
+        }
+        for days, label in ((21, "return_1m"), (63, "return_3m"), (126, "return_6m"), (252, "return_12m")):
+            result[label] = (current / float(close.iloc[-min(days + 1, len(close))]) - 1) * 100 if len(close) > 1 else None
+        if "Volume" in prices and len(prices["Volume"].dropna()) >= 60:
+            volume = prices["Volume"].dropna()
+            result["volume_20d_vs_60d"] = float(volume.tail(20).mean() / volume.tail(60).mean() * 100)
+        return result
+    except Exception:
+        return {}
+
+
+# Compatibility aliases kept small so existing notebooks do not break abruptly.
+get_financials = get_quarterly_financials
+get_macro_data = get_macro_snapshot

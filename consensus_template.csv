@@ -1,4 +1,5 @@
-company,year,forward_eps,forward_per,target_price,expected_revenue_growth,expected_op_margin,expected_net_income,rating,analyst_count
-삼성전자,2025,,,,,,,BUY,
-농심,2025,,,,,,,HOLD,
-에이피알,2025,,,,,,,BUY,
+assumption,value,unit,source,note
+revenue_growth,5.0,%,FinSight recommendation,사용자 최종 확인
+opm,6.0,%,Recent 4Q average,사용자 최종 확인
+fcf_conversion,75.0,%,CFO/Operating profit,사용자 최종 확인
+erp,6.0,%,KICPA reference,연 1회 업데이트 필요
