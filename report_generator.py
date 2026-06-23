@@ -67,6 +67,7 @@ def export_excel(
     structured: dict | None = None,
     price_action: dict | None = None,
     interpreted: list[dict] | None = None,
+    tracker_commentary: list[dict] | None = None,
 ) -> bytes:
     """Build an eight-sheet, source-backed analyst workbook and return XLSX bytes."""
     _ensure_runtime()
@@ -99,6 +100,7 @@ def export_excel(
         "researchReference": research_reference or {},
         "structured": structured or {},
         "priceAction": price_action or {},
+        "trackerCommentary": tracker_commentary or [],
         "interpreted": [
             {**{k: v for k, v in item.items() if k not in ("interpretation",)}, "interpretation": item.get("interpretation", {})}
             for item in (interpreted or [])
