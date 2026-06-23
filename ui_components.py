@@ -15,9 +15,16 @@ def inject_css() -> None:
       .stApp {background:#F1F4F8;color:var(--ink);font-feature-settings:"tnum";}
       .block-container {max-width:1480px;padding-top:1.2rem;padding-bottom:4rem;}
       [data-testid="stSidebar"] {background:#0F2238;border-right:1px solid #0B1A2C;}
-      [data-testid="stSidebar"] * {color:#D6E1ED;}
+      [data-testid="stSidebar"] label, [data-testid="stSidebar"] p, [data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {color:#D6E1ED;}
       [data-testid="stSidebar"] h2 {color:#FFFFFF;letter-spacing:-.02em;}
-      [data-testid="stSidebar"] .stButton button {border-radius:4px;font-weight:700;min-height:2.8rem;background:#2563EB;color:#fff;border:none;}
+      /* Input/select fields: white box needs dark text so typing is legible */
+      [data-testid="stSidebar"] input, [data-testid="stSidebar"] textarea {color:#0F172A !important;background:#FFFFFF;}
+      [data-testid="stSidebar"] [data-baseweb="input"], [data-testid="stSidebar"] [data-baseweb="select"] > div {background:#FFFFFF;border:1px solid #CBD5E1;border-radius:6px;}
+      [data-testid="stSidebar"] [data-baseweb="input"] *, [data-testid="stSidebar"] [data-baseweb="select"] * {color:#0F172A;}
+      [data-testid="stSidebar"] input::placeholder {color:#94A3B8 !important;}
+      [data-testid="stSidebar"] [role="radiogroup"] label {color:#D6E1ED;}
+      [data-testid="stSidebar"] .stButton button {border-radius:4px;font-weight:700;min-height:2.8rem;background:#2563EB;color:#fff !important;border:none;}
+      [data-testid="stSidebar"] .stButton button * {color:#fff !important;}
       [data-testid="stSidebar"] .stButton button:hover {background:#1D4ED8;}
       [data-testid="stMetric"] {background:#FFFFFF;border:1px solid #E2E8F0;border-top:3px solid var(--accent);border-radius:6px;padding:14px 16px;box-shadow:0 1px 2px rgba(16,24,40,.05);}
       [data-testid="stMetricLabel"] {color:#475467;font-size:.76rem;letter-spacing:.02em;}
