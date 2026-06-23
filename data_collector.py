@@ -22,10 +22,20 @@ DART_API_KEY = os.getenv("DART_API_KEY", "")
 ECOS_API_KEY = os.getenv("ECOS_API_KEY", "")
 NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "")
 NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
+KOSIS_API_KEY = os.getenv("KOSIS_API_KEY", "")
+KOSIS_FOOD_TABLE_ID = os.getenv("KOSIS_FOOD_TABLE_ID", "")
+KAMIS_API_ID = os.getenv("KAMIS_API_ID", "")
+KAMIS_API_KEY = os.getenv("KAMIS_API_KEY", "")
+FRED_API_KEY = os.getenv("FRED_API_KEY", "")
+TRADING_ECONOMICS_KEY = os.getenv("TRADING_ECONOMICS_KEY", "")
+UN_COMTRADE_KEY = os.getenv("UN_COMTRADE_KEY", "")
+KRX_ID = os.getenv("KRX_ID", "")
+KRX_PW = os.getenv("KRX_PW", "")
 DART_BASE = "https://opendart.fss.or.kr/api"
 ECOS_BASE = "https://ecos.bok.or.kr/api/StatisticSearch"
 NAVER_NEWS_BASE = "https://openapi.naver.com/v1/search/news.json"
 NAVER_BLOG_BASE = "https://openapi.naver.com/v1/search/blog.json"
+FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 
 REPORTS = {1: "11013", 2: "11012", 3: "11014", 4: "11011"}
 REPORT_LABELS = {1: "1Q", 2: "2Q", 3: "3Q", 4: "4Q"}
@@ -779,6 +789,229 @@ def get_market_snapshot(stock_code: str) -> dict:
         return result
     except Exception:
         return {}
+
+
+def _status(source: str, connected: bool, detail: str, *, action: str = "", evidence_level: str = "Context") -> dict:
+    return {
+        "source": source,
+        "connected": connected,
+        "status": "Connected" if connected else "Needs setup",
+        "detail": detail,
+        "action": action,
+        "evidence_level": evidence_level,
+    }
+
+
+def get_krx_flow_snapshot(stock_code: str, days: int = 90) -> dict:
+    """Optional KRX investor-flow snapshot via pykrx.
+
+    Investor flow is intentionally kept separate from DART fundamentals: it explains
+    multiple/price reaction risk, not operating performance.
+    """
+    if not stock_code:
+        return {"connected": False, "source": "KRX", "reason": "종목코드 없음", "status_rows": []}
+    if not KRX_ID or not KRX_PW:
+        return {
+            "connected": False,
+            "source": "KRX/pykrx",
+            "reason": "KRX_ID 또는 KRX_PW 환경변수 필요",
+            "action": "KRX 계정 정보를 .env에 추가하면 기관·외국인 수급을 자동 연결",
+            "status_rows": [],
+        }
+    try:
+        from pykrx import stock
+
+        end = dt.date.today()
+        start = end - dt.timedelta(days=days)
+        frame = stock.get_market_trading_value_by_date(
+            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), stock_code, detail=True
+        )
+        if frame is None or frame.empty:
+            return {"connected": False, "source": "KRX/pykrx", "reason": "수급 데이터 없음", "status_rows": []}
+        numeric = frame.apply(pd.to_numeric, errors="coerce")
+
+        def tail_sum(possible_cols: list[str], window: int) -> float | None:
+            for col in possible_cols:
+                if col in numeric:
+                    values = numeric[col].dropna().tail(min(window, len(numeric[col].dropna())))
+                    if not values.empty:
+                        return float(values.sum() / 1e8)
+            return None
+
+        foreign_20d = tail_sum(["외국인합계", "외국인"], 20)
+        institution_20d = tail_sum(["기관합계", "기관"], 20)
+        retail_20d = tail_sum(["개인"], 20)
+        foreign_60d = tail_sum(["외국인합계", "외국인"], 60)
+        institution_60d = tail_sum(["기관합계", "기관"], 60)
+        smart_20d = sum(x for x in [foreign_20d, institution_20d] if x is not None)
+        if foreign_20d is None and institution_20d is None:
+            verdict = "수급 열 매핑 확인 필요"
+        elif smart_20d < 0:
+            verdict = "기관·외국인 순매도 우위 — 실적 개선에도 멀티플 회복이 지연될 수 있음"
+        elif smart_20d > 0:
+            verdict = "기관·외국인 순매수 우위 — 실적 개선이 가격에 반영될 가능성 확인"
+        else:
+            verdict = "수급 중립"
+        return {
+            "connected": True,
+            "source": "KRX investor flow via pykrx",
+            "as_of": str(numeric.index[-1].date()) if hasattr(numeric.index[-1], "date") else str(numeric.index[-1]),
+            "foreign_20d_eok": foreign_20d,
+            "institution_20d_eok": institution_20d,
+            "retail_20d_eok": retail_20d,
+            "foreign_60d_eok": foreign_60d,
+            "institution_60d_eok": institution_60d,
+            "verdict": verdict,
+            "columns": list(frame.columns),
+        }
+    except ImportError:
+        return {
+            "connected": False,
+            "source": "KRX Data",
+            "reason": "pykrx 미설치",
+            "action": "requirements 설치 후 KRX 수급 자동 연결",
+            "status_rows": [],
+        }
+    except Exception as exc:
+        message = str(exc)[:160]
+        if "KRX_ID" in message or "KRX_PW" in message or "로그인" in message:
+            message = "KRX_ID 또는 KRX_PW 환경변수 필요"
+        return {"connected": False, "source": "KRX/pykrx", "reason": message, "status_rows": []}
+
+
+def _fred_latest(series_id: str) -> dict | None:
+    if not FRED_API_KEY:
+        return None
+    try:
+        response = requests.get(
+            FRED_BASE,
+            params={
+                "series_id": series_id,
+                "api_key": FRED_API_KEY,
+                "file_type": "json",
+                "sort_order": "desc",
+                "limit": 8,
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        for row in response.json().get("observations", []):
+            value = _number(row.get("value"))
+            if value is not None:
+                return {"date": row.get("date"), "value": value, "series_id": series_id}
+    except Exception:
+        return None
+    return None
+
+
+def get_worldbank_macro_snapshot() -> dict:
+    """No-key country macro fallback for inflation/GDP context."""
+    indicators = {
+        "korea_inflation_yoy": ("KOR", "FP.CPI.TOTL.ZG"),
+        "korea_gdp_growth": ("KOR", "NY.GDP.MKTP.KD.ZG"),
+        "us_inflation_yoy": ("USA", "FP.CPI.TOTL.ZG"),
+    }
+    result = {"connected": False, "source": "World Bank API", "items": []}
+    for label, (country, indicator) in indicators.items():
+        try:
+            response = requests.get(
+                f"https://api.worldbank.org/v2/country/{country}/indicator/{indicator}",
+                params={"format": "json", "per_page": 6},
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload[1] if isinstance(payload, list) and len(payload) > 1 else []
+            row = next((x for x in rows if x.get("value") is not None), None)
+            if row:
+                result["items"].append({
+                    "label": label,
+                    "date": row.get("date"),
+                    "value": float(row.get("value")),
+                    "source": "World Bank",
+                })
+        except Exception:
+            continue
+    result["connected"] = bool(result["items"])
+    return result
+
+
+def get_external_driver_snapshot(company: str, stock_code: str) -> dict:
+    """Aggregate non-DART drivers used as second-level hypotheses, never as hard facts."""
+    flows = get_krx_flow_snapshot(stock_code)
+    worldbank = get_worldbank_macro_snapshot()
+    fred_fx = _fred_latest("DEXKOUS")
+    fred_wheat = _fred_latest("PWHEAMTUSDM")
+
+    status_rows = [
+        _status(
+            "KRX investor flow",
+            bool(flows.get("connected")),
+            flows.get("verdict") or flows.get("reason") or "기관·외국인·개인 수급",
+            action=flows.get("action", "실적과 주가 반응 괴리 설명에 사용"),
+            evidence_level="Market microstructure",
+        ),
+        _status(
+            "KOSIS",
+            bool(KOSIS_API_KEY and KOSIS_FOOD_TABLE_ID),
+            "식품산업·소비·물가 세부통계 연결" if KOSIS_API_KEY and KOSIS_FOOD_TABLE_ID else "KOSIS_API_KEY와 KOSIS_FOOD_TABLE_ID 필요",
+            action="국내 산업 성장률/수요 proxy로 매출 가정 검증",
+            evidence_level="Official statistics",
+        ),
+        _status(
+            "KAMIS",
+            bool(KAMIS_API_ID and KAMIS_API_KEY),
+            "농산물·가공식품 원재료 가격 연결 준비" if KAMIS_API_ID and KAMIS_API_KEY else "KAMIS_API_ID와 KAMIS_API_KEY 필요",
+            action="원가율 변동 원인 후보로 사용",
+            evidence_level="Official price data",
+        ),
+        _status(
+            "World Bank",
+            bool(worldbank.get("connected")),
+            f"{len(worldbank.get('items', []))}개 국가 매크로 항목",
+            action="해외/국내 수요·물가 배경 확인",
+            evidence_level="Official statistics",
+        ),
+        _status(
+            "FRED",
+            bool(FRED_API_KEY and (fred_fx or fred_wheat)),
+            "USD/KRW·원재료 proxy 연결" if FRED_API_KEY else "FRED_API_KEY 필요",
+            action="환율·원재료 가격이 원가율/해외 실적에 미친 압력 확인",
+            evidence_level="Macro/commodity proxy",
+        ),
+        _status(
+            "Trading Economics",
+            bool(TRADING_ECONOMICS_KEY),
+            "국가별 고빈도 매크로/원자재 확장 준비" if TRADING_ECONOMICS_KEY else "TRADING_ECONOMICS_KEY 필요",
+            action="해외 국가별 매출 가정과 환율/금리 민감도 보강",
+            evidence_level="Macro context",
+        ),
+        _status(
+            "UN Comtrade / KATI",
+            bool(UN_COMTRADE_KEY),
+            "HS코드 기반 수출입 proxy 확장 준비" if UN_COMTRADE_KEY else "UN_COMTRADE_KEY 및 HS 코드 매핑 필요",
+            action=f"{company} 해외 매출이 공시보다 늦게 보일 때 수출 물량 proxy로 검증",
+            evidence_level="Trade proxy",
+        ),
+    ]
+    return {
+        "flows": flows,
+        "macro": {
+            "worldbank": worldbank,
+            "fred_usd_krw": fred_fx,
+            "fred_wheat": fred_wheat,
+        },
+        "cost_inputs": {
+            "kamis_configured": bool(KAMIS_API_ID and KAMIS_API_KEY),
+            "fred_wheat": fred_wheat,
+            "note": "KAMIS 품목코드 매핑 후 소맥/팜유/농산물 원가 proxy를 원가율 해석에 연결",
+        },
+        "trade_proxy": {
+            "configured": bool(UN_COMTRADE_KEY),
+            "note": "UN Comtrade/KATI는 HS코드 또는 KATI 품목 매핑 후 해외 물량 검증에 사용",
+        },
+        "status_rows": status_rows,
+    }
 
 
 # Compatibility aliases kept small so existing notebooks do not break abruptly.

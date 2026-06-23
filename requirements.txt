@@ -4,5 +4,6 @@ numpy>=1.26.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 FinanceDataReader>=0.9.50
+pykrx>=1.0.48
 lxml>=5.0.0
 plotly>=5.20.0
