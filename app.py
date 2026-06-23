@@ -129,12 +129,6 @@ def _load_suggestions(query: str) -> list[dict]:
         return []
 
 
-def _pick_company(name: str) -> None:
-    """'혹시 이걸 찾으셨나요?' 후보 클릭 → 그 기업명으로 입력칸을 채우고 즉시 재분석."""
-    st.session_state["company_query"] = name
-    st.session_state["auto_run"] = True
-
-
 @st.dialog("기업 검색")
 def _suggestion_dialog(query: str, suggestions: list[dict]) -> None:
     """Centered modal (dimmed backdrop) that surfaces close-name candidates."""
@@ -146,7 +140,10 @@ def _suggestion_dialog(query: str, suggestions: list[dict]) -> None:
     )
     def _candidate_button(container, idx, item):
         label = f"{item['name']}" + (f"  ·  {item['stock_code']}" if item.get("stock_code") else "")
-        container.button(label, key=f"dlg_sug_{idx}", on_click=_pick_company, args=(item["name"],), width="stretch")
+        # 모달 내부 클릭은 fragment 스코프라, 큐 키로 넘기고 st.rerun()으로 전체 rerun을 강제한다.
+        if container.button(label, key=f"dlg_sug_{idx}", width="stretch"):
+            st.session_state["queued_company"] = item["name"]
+            st.rerun()
 
     if len(suggestions) == 1:
         _, mid, _ = st.columns([1, 2, 1])  # 후보 1개는 가운데 정렬
@@ -574,6 +571,9 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.divider()
+    if "queued_company" in st.session_state:  # 후보 모달에서 고른 기업 → 입력칸 채우고 자동 분석
+        st.session_state["company_query"] = st.session_state.pop("queued_company")
+        st.session_state["auto_run"] = True
     st.session_state.setdefault("company_query", "농심")
     company_input = st.text_input("기업명 또는 종목코드", key="company_query")
     quarters_input = st.select_slider(
