@@ -1,6 +1,8 @@
 """FinSight analyst workbench: filing-first diagnostics, peer evidence and DCF linkage."""
 from __future__ import annotations
 
+from html import escape
+
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -131,6 +133,22 @@ def _pick_company(name: str) -> None:
     """'혹시 이걸 찾으셨나요?' 후보 클릭 → 그 기업명으로 입력칸을 채우고 즉시 재분석."""
     st.session_state["company_query"] = name
     st.session_state["auto_run"] = True
+
+
+@st.dialog("기업 검색")
+def _suggestion_dialog(query: str, suggestions: list[dict]) -> None:
+    """Centered modal (dimmed backdrop) that surfaces close-name candidates."""
+    st.markdown(
+        "<div class='fs-nf'><div class='fs-nf-ico'>🔎</div>"
+        f"<div class='fs-nf-title'>‘{escape(query)}’ 을(를) 정확히 찾지 못했어요</div>"
+        "<div class='fs-nf-sub'>혹시 이걸 찾으셨나요? 누르면 바로 분석됩니다.</div></div>",
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(2)
+    for idx, item in enumerate(suggestions):
+        label = f"{item['name']}" + (f"  ·  {item['stock_code']}" if item.get("stock_code") else "")
+        cols[idx % 2].button(label, key=f"dlg_sug_{idx}", on_click=_pick_company, args=(item["name"],), width="stretch")
+    st.caption("정식 명칭(예: LG전자)이나 6자리 종목코드로도 검색돼요.")
 
 
 def _tracker_style(frame: pd.DataFrame):
@@ -597,12 +615,7 @@ if analyze or st.session_state.pop("auto_run", False):
             query = company_input.strip()
             suggestions = _load_suggestions(query) if "찾지 못" in str(exc) else []
             if suggestions:
-                st.warning(f"‘{query}’ 을(를) 정확히 찾지 못했어요. 혹시 이걸 찾으셨나요?")
-                cols = st.columns(min(len(suggestions), 3))
-                for idx, item in enumerate(suggestions):
-                    label = f"{item['name']}" + (f"  ·  {item['stock_code']}" if item.get("stock_code") else "")
-                    cols[idx % len(cols)].button(label, key=f"suggest_{idx}", on_click=_pick_company, args=(item["name"],), width="stretch")
-                st.caption("후보를 누르면 바로 분석됩니다. 정식 명칭(예: LG전자)이나 6자리 종목코드로도 검색돼요.")
+                _suggestion_dialog(query, suggestions)
             else:
                 st.error(f"분석을 시작하지 못했습니다: {exc}")
 

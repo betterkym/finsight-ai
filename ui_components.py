@@ -82,6 +82,12 @@ def inject_css() -> None:
       .finsight-context-item a {font-weight:700;color:#143257;text-decoration:none;}
       .finsight-context-item span {display:block;color:#64748B;font-size:.76rem;margin-top:2px;}
       .finsight-context-item p {color:#111827;font-size:.9rem;line-height:1.5;margin:7px 0 0 0;}
+      /* '혹시 이걸 찾으셨나요?' modal content */
+      .fs-nf {text-align:center;margin:2px 0 16px;}
+      .fs-nf-ico {font-size:1.9rem;line-height:1;margin-bottom:8px;}
+      .fs-nf-title {font-size:1.18rem;font-weight:800;color:#0B1F33;letter-spacing:-.02em;line-height:1.35;}
+      .fs-nf-sub {font-size:.92rem;color:#667085;margin-top:8px;line-height:1.5;}
+      div[data-testid="stDialog"] div[role="dialog"] {border-radius:16px;box-shadow:0 24px 60px rgba(11,31,51,.28);}
       /* Slim top bar (analysis pages + landing option A) */
       .fs-bar {display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #D7DEE7;padding:2px 0 12px;margin-bottom:20px;gap:20px;}
       .fs-bar-brand {font-size:1.5rem;font-weight:800;letter-spacing:-.045em;color:#0B1F33;line-height:1;}
