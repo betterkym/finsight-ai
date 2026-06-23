@@ -350,7 +350,7 @@ def interpret_price_action(
     # 1) Earnings axis
     if operating_axes:
         if operating_up >= operating_down:
-            earn_read = "최근 분기 실적은 훼손이 아니라 개선 쪽입니다"
+            earn_read = "최근 분기 실적은 개선 흐름입니다"
             earn_weight = "Low" if price_weak else "Aligned"
         else:
             earn_read = "매출·이익·마진 중 일부가 실제로 약해졌습니다"

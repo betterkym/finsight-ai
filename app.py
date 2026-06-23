@@ -228,6 +228,50 @@ def _external_driver_note(context: dict) -> tuple[str, list[str]]:
     return " · ".join(notes[:3]) if notes else "외부 수급·원가·무역 proxy는 연결 상태를 별도 표에서 확인", status
 
 
+_PEER_HIGHER_BETTER = {"revenue_yoy", "opm", "cfo_margin", "fcf_margin"}
+_PEER_LOWER_BETTER = {"ar_days", "inventory_days", "debt_ratio"}
+
+
+def _build_peer_read(peer_benchmark: pd.DataFrame, company: str) -> dict:
+    """Turn the peer gap table into an objective '그래서 무엇을 의미하나' read."""
+    if peer_benchmark is None or peer_benchmark.empty:
+        return {}
+    adv, dis, neu = [], [], []
+    for _, row in peer_benchmark.iterrows():
+        gap = _safe_num(row.get("격차"))
+        key, label = row.get("metric_key"), row.get("지표")
+        if gap is None or not row.get("비교기업 수"):
+            continue
+        threshold = 2.0 if row.get("단위") == "일" else 0.5
+        if key in _PEER_HIGHER_BETTER:
+            better, worse = gap > threshold, gap < -threshold
+        elif key in _PEER_LOWER_BETTER:
+            better, worse = gap < -threshold, gap > threshold
+        else:
+            neu.append(label)
+            continue
+        (adv if better else dis if worse else neu).append(label)
+
+    margin_adv = any(m in adv for m in ("영업이익률", "CFO 마진", "FCF 마진"))
+    growth_adv, growth_dis = "매출 성장률 YoY" in adv, "매출 성장률 YoY" in dis
+    if margin_adv and growth_dis:
+        headline = f"{company}는 수익성에서 동종기업을 앞서지만, 성장성은 뒤처집니다."
+        so_what = "마진 우위는 멀티플 프리미엄을 일부 정당화하지만, 성장률이 업종에 못 미치면 성장 멀티플(PER 상단)은 제한됩니다. ‘질 좋은 저성장’으로 접근하는 편이 안전합니다."
+    elif growth_adv and not margin_adv:
+        headline = f"{company}는 성장은 빠르지만, 수익성은 업종을 앞서지 못합니다."
+        so_what = "성장 우위는 매출 가정 상향을 지지하지만, 마진이 따라오지 않으면 성장의 질을 먼저 검증해야 합니다. OPM·FCFF 전환율은 보수적으로 둡니다."
+    elif adv and not dis:
+        headline = f"{company}는 주요 지표에서 동종기업을 대체로 상회합니다."
+        so_what = "전반적 우위는 상대 프리미엄을 지지합니다. 이 우위가 일시적이 아니라 2~3분기 지속되는지 확인되면 가정 상향 여지가 커집니다."
+    elif dis and not adv:
+        headline = f"{company}는 주요 지표에서 동종기업을 대체로 하회합니다."
+        so_what = "전반적 열위는 업종 대비 디스카운트를 설명합니다. 회복의 구체적 트리거(원가·믹스·점유율)가 확인되기 전에는 멀티플 상향을 자제합니다."
+    else:
+        headline = f"{company}는 동종기업과 대체로 비슷한 수준입니다."
+        so_what = "뚜렷한 상대 우열이 없으면 주가 차이는 펀더멘털보다 기대치·수급·테마에서 올 가능성이 큽니다. 02 투자판단의 괴리 분해를 함께 보세요."
+    return {"headline": headline, "advantage": adv, "disadvantage": dis, "neutral": neu, "so_what": so_what}
+
+
 def _make_card(title: str, verdict: str, read: str, evidence: list[str], so_what: str, action: str, next_: str, model_link: str, confidence: str = "Medium") -> dict:
     return {
         "title": title,
@@ -863,8 +907,24 @@ with peer_tab:
     st.write(f"비교기업: **{', '.join(st.session_state.get('peer_selection', [])) or '없음'}**")
     st.caption(f"선정 방식: {st.session_state.get('peer_method')}")
     if peer_kpis:
+        peer_read = _build_peer_read(peer_benchmark, company)
+        if peer_read:
+            st.markdown(
+                '<div class="fs-card">'
+                f'<div class="fs-card-lead">{escape(peer_read["headline"])}</div>'
+                '<div class="fs-chk-grid">'
+                f'<div class="fs-chk-cell fs-chk-ok"><span class="fs-chk-h">업종 대비 우위</span><span class="tx">{escape(", ".join(peer_read["advantage"]) or "—")}</span></div>'
+                f'<div class="fs-chk-cell fs-chk-ng"><span class="fs-chk-h">업종 대비 열위</span><span class="tx">{escape(", ".join(peer_read["disadvantage"]) or "—")}</span></div>'
+                f'<div class="fs-chk-cell fs-chk-act"><span class="fs-chk-h">업종 평균 수준</span><span class="tx">{escape(", ".join(peer_read["neutral"]) or "—")}</span></div>'
+                '</div>'
+                f'<div class="fs-rpt-reason" style="margin-top:12px">{escape(peer_read["so_what"])}</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        st.markdown("#### 지표별 격차")
+        st.caption("격차 = 분석기업 − 동종기업 중앙값. (회수일수·재고일수·부채비율은 낮을수록 우위)")
         st.plotly_chart(peer_benchmark_chart(kpis, peer_kpis), width="stretch", key="peer_benchmark_chart")
-        st.dataframe(peer_benchmark.style.format({"분석기업": "{:.1f}", "동종기업 중앙값": "{:.1f}", "격차": "{:+.1f}"}, na_rep="N/A"), width="stretch", hide_index=True)
+        st.dataframe(peer_benchmark.drop(columns=["metric_key"], errors="ignore").style.format({"분석기업": "{:.1f}", "동종기업 중앙값": "{:.1f}", "격차": "{:+.1f}"}, na_rep="N/A"), width="stretch", hide_index=True)
         st.dataframe(build_peer_comparison(kpis, peer_kpis).style.format(precision=1, na_rep="N/A"), width="stretch")
     else:
         st.warning("추천 가능한 동종기업이 없습니다. 자동 추천을 끄고 직접 선택해 주세요.")
