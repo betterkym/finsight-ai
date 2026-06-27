@@ -2112,29 +2112,63 @@ def render_validation_flow(compact: bool = False) -> None:
 
 
 def render_product_header() -> None:
-    """Render the validator title with a direct entry to the old analyst app."""
+    """Render the validator title with F badge as clickable home button."""
+    st.markdown(
+        """<style>
+        button[data-testid="baseButton-reset_home"] {
+            width: 44px !important;
+            height: 44px !important;
+            padding: 0 !important;
+            border: none !important;
+            border-radius: 10px !important;
+            background: linear-gradient(135deg, #1B2A4A 0%, #2E4A7A 100%) !important;
+            color: white !important;
+            font-weight: 900 !important;
+            font-size: 22px !important;
+            box-shadow: 0 2px 6px rgba(27,42,74,0.25) !important;
+        }
+        button[data-testid="baseButton-reset_home"]:hover {
+            opacity: 0.85 !important;
+        }
+        button[data-testid="baseButton-reset_home_text"] {
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            padding: 4px 0 !important;
+            height: auto !important;
+        }
+        button[data-testid="baseButton-reset_home_text"]:hover {
+            background: transparent !important;
+            opacity: 0.7 !important;
+        }
+        button[data-testid="baseButton-reset_home_text"] span {
+            font-size: 32px !important;
+            font-weight: 850 !important;
+            color: #131A24 !important;
+            letter-spacing: -0.02em !important;
+            line-height: 1.1 !important;
+            white-space: pre-line !important;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+
     title_col, mode_col = st.columns([5.0, 1.15])
     with title_col:
-        st.markdown(
-            "<style>"
-            ".fs-title-btn:hover { opacity: 0.7; cursor: pointer; }"
-            "</style>"
-            "<div class='fs-title-btn' style='display:flex;align-items:center;gap:11px;margin:2px 0 2px;transition:opacity 0.2s'>"
-            "<div style='width:44px;height:44px;border-radius:10px;"
-            "background:linear-gradient(135deg,#1B2A4A 0%,#2E4A7A 100%);"
-            "display:flex;align-items:center;justify-content:center;"
-            "color:#fff;font-weight:900;font-size:22px;letter-spacing:-1px;"
-            "box-shadow:0 2px 6px rgba(27,42,74,0.25)'>F</div>"
-            "<div>"
-            "<div style='font-size:32px;font-weight:850;color:#131A24;letter-spacing:-0.02em;line-height:1.1'>FinSight</div>"
-            "<div style='font-size:16px;font-weight:650;color:#6B7684;margin-top:2px'>리포트 신뢰도 검증</div>"
-            "</div></div>",
-            unsafe_allow_html=True,
-        )
-        if st.button("🏠", key="home_reset", help="홈으로 돌아가기", use_container_width=False):
-            st.session_state.clear()
-            st.query_params.clear()
-            st.rerun()
+        badge_col, text_col = st.columns([0.08, 0.92], gap="small")
+
+        with badge_col:
+            if st.button("F", key="reset_home", help="홈으로 돌아가기", use_container_width=False):
+                st.session_state.clear()
+                st.query_params.clear()
+                st.rerun()
+
+        with text_col:
+            if st.button("FinSight\n리포트 신뢰도 검증", key="reset_home_text", help="홈으로 돌아가기", use_container_width=False):
+                st.session_state.clear()
+                st.query_params.clear()
+                st.rerun()
+
     with mode_col:
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         if st.button("Analyst Mode", key="open_analyst_mode", width="stretch"):
