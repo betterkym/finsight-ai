@@ -207,7 +207,7 @@ def _price_action_factor(price_action: dict) -> dict | None:
         title = "호재 선반영 가능성"
         reason = "실적이 나쁘지 않은데 주가가 약하면, 리포트의 긍정 논리가 이미 가격에 반영됐거나 다음 분기 지속성을 시장이 낮게 보는 구간일 수 있습니다."
     elif "수급" in driver:
-        title = "수급 부담으로 주가 반영 지연"
+        title = "외국인 매도와 목표가 반영 지연"
         reason = "리포트의 매수 논리가 맞더라도, 외국인·주요주주 매도가 강하면 목표가까지의 회복이 늦어질 수 있습니다."
     else:
         title = "성장 기대가 아직 숫자로 확인되지 않음"

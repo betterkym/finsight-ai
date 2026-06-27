@@ -1415,7 +1415,7 @@ def explain_post_event_impact(item: dict) -> str:
     if event_type == "지분공시" or "대량보유" in title or "지분" in title:
         if ratio_change is not None and ratio_change < 0:
             return (
-                f"신뢰도 영향: 주요주주 보유비율이 {ratio_change:+.2f}%p 줄어 단기 수급 부담으로 반영합니다. "
+                f"신뢰도 영향: 주요주주 보유비율이 {ratio_change:+.2f}%p 줄어 단기 매도 압력으로 반영합니다. "
                 "실적 가정 자체를 부정하진 않지만, 목표가까지 바로 회복된다고 보기 어렵게 만드는 요인입니다."
             )
         if ratio_change is not None and ratio_change > 0:
@@ -1572,6 +1572,98 @@ COLOR = {
 st.markdown(
     """
     <style>
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+
+    /* ── 전역 타이포그래피 ── */
+    html, body, [class*="css"], .stApp, button, input, textarea, select {
+        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+    .stApp { background: #F5F6F8; }
+    h1, h2, h3, h4 { letter-spacing: -0.01em; color: #131A24; }
+    h2 { font-weight: 800 !important; }
+    h3 { font-weight: 800 !important; }
+    h4 { font-weight: 750 !important; }
+
+    /* ── Streamlit 기본 군더더기 정리 ── */
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
+    [data-testid="stToolbar"] { right: 12px; }
+    [data-testid="stHeader"] { background: transparent; height: 0; }
+    .block-container { padding-top: 2.0rem; padding-bottom: 3rem; max-width: 1180px; }
+
+    /* ── 본문 카드 컨테이너(중앙 영역) ── */
+    [data-testid="stMainBlockContainer"] { }
+
+    /* ── metric을 카드로 ── */
+    [data-testid="stMetric"] {
+        background: #FFFFFF;
+        border: 1px solid #E6E9EE;
+        border-radius: 10px;
+        padding: 14px 16px;
+        box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+    }
+    [data-testid="stMetricLabel"] p {
+        font-size: 12.5px !important;
+        font-weight: 700 !important;
+        color: #64748B !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 25px !important;
+        font-weight: 850 !important;
+        color: #131A24 !important;
+        letter-spacing: -0.02em;
+    }
+
+    /* ── 탭 바를 상용 사이트풍으로 ── */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2px;
+        border-bottom: 1px solid #E2E6EC;
+        background: transparent;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 44px;
+        padding: 0 18px;
+        background: transparent;
+        border: none;
+        border-radius: 8px 8px 0 0;
+        color: #64748B;
+        font-weight: 700;
+        font-size: 14px;
+    }
+    .stTabs [data-baseweb="tab"]:hover { background: #EEF1F5; color: #334155; }
+    .stTabs [aria-selected="true"] {
+        color: #1B2A4A !important;
+        background: #FFFFFF !important;
+        border-bottom: 2.5px solid #1B2A4A !important;
+    }
+    .stTabs [data-baseweb="tab-highlight"] { display: none; }
+    .stTabs [data-baseweb="tab-panel"] { padding-top: 18px; }
+
+    /* ── 버튼 ── */
+    .stButton > button {
+        border-radius: 9px;
+        font-weight: 750;
+        border: 1px solid #D5DAE1;
+        transition: all .12s ease;
+    }
+    .stButton > button:hover { border-color: #1B2A4A; color: #1B2A4A; }
+    .stButton > button[kind="primary"] {
+        background: #1B2A4A;
+        border: 1px solid #1B2A4A;
+    }
+    .stButton > button[kind="primary"]:hover { background: #25365C; color: #fff; }
+
+    /* ── divider/캡션/사이드바 ── */
+    hr { margin: 14px 0 !important; border-color: #E6E9EE !important; }
+    [data-testid="stSidebar"] { background: #FFFFFF; border-right: 1px solid #E6E9EE; }
+    [data-testid="stSidebar"] .stButton > button { border-radius: 8px; }
+    [data-testid="stCaptionContainer"] { color: #6B7684; }
+
+    /* ── 데이터프레임 ── */
+    [data-testid="stDataFrame"] { border: 1px solid #E6E9EE; border-radius: 10px; }
+
     .fs-logic-wrap {
         border: 1px solid #D8DEE6;
         border-radius: 8px;
@@ -1702,9 +1794,21 @@ def render_product_header() -> None:
     """Render the validator title with a direct entry to the old analyst app."""
     title_col, mode_col = st.columns([5.0, 1.15])
     with title_col:
-        st.markdown(f"## {PRODUCT_TITLE}")
+        st.markdown(
+            "<div style='display:flex;align-items:center;gap:11px;margin:2px 0 2px'>"
+            "<div style='width:36px;height:36px;border-radius:9px;"
+            "background:linear-gradient(135deg,#1B2A4A 0%,#2E4A7A 100%);"
+            "display:flex;align-items:center;justify-content:center;"
+            "color:#fff;font-weight:900;font-size:18px;letter-spacing:-1px;"
+            "box-shadow:0 2px 6px rgba(27,42,74,0.25)'>F</div>"
+            "<div>"
+            "<div style='font-size:23px;font-weight:850;color:#131A24;letter-spacing:-0.02em;line-height:1.1'>FinSight</div>"
+            "<div style='font-size:12.5px;font-weight:650;color:#6B7684;margin-top:1px'>리포트 신뢰도 검증</div>"
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
     with mode_col:
-        st.markdown("<div style='height:3px'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         if st.button("Analyst Mode", key="open_analyst_mode", width="stretch"):
             st.query_params["view"] = "analyst"
             st.rerun()
@@ -2179,23 +2283,48 @@ else:
 # 초기 안내 화면
 if A is None:
     render_product_header()
-    st.markdown("### 왼쪽에서 종목과 리포트를 선택하세요")
-    st.info(PRODUCT_COPY)
-    st.divider()
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.markdown("#### ① 목표가 편차")
-        st.markdown("리포트 목표가가 평균과 다른 리포트 대비 얼마나 높은가")
-    with col2:
-        st.markdown("#### ② 발행 이후 괴리")
-        st.markdown("발행 뒤 주가·수급·공시가 리포트 방향과 달라졌는가")
-    with col3:
-        st.markdown("#### ③ 필요 실적")
-        st.markdown("목표가가 성립하려면 EPS가 얼마나 좋아져야 하는가")
-    with col4:
-        st.markdown("#### ④ 본문 의견")
-        st.markdown("리포트 안의 핵심 의견이 서로와 실제 데이터에 맞는가")
+    # ── 히어로 ──
+    st.markdown(
+        "<div style='margin:18px 0 6px;padding:34px 36px;border-radius:16px;"
+        "background:linear-gradient(135deg,#1B2A4A 0%,#2C4470 55%,#34548A 100%);"
+        "box-shadow:0 8px 24px rgba(27,42,74,0.18)'>"
+        "<div style='display:inline-block;font-size:12px;font-weight:800;color:#BBD0EE;"
+        "background:rgba(255,255,255,0.10);padding:5px 12px;border-radius:20px;margin-bottom:14px'>"
+        "증권사 리포트 신뢰도 검증</div>"
+        "<div style='font-size:30px;font-weight:850;color:#FFFFFF;line-height:1.28;letter-spacing:-0.02em'>"
+        "목표가를 그대로 믿기 전에,<br>데이터로 먼저 검증하세요</div>"
+        "<div style='font-size:14.5px;color:#CDD8EA;line-height:1.65;margin-top:14px;max-width:680px'>"
+        "DART 재무·공시, KRX 주가·수급, 증권사 목표가 평균, 발행 이후 뉴스·지분 변동, "
+        "리포트 본문을 한 번에 대조해 목표가와 투자의견의 신뢰도를 점수화합니다.</div>"
+        "<div style='font-size:13px;color:#9DB2D4;margin-top:16px;font-weight:600'>"
+        "← 왼쪽에서 종목을 검색하고 검증할 리포트를 선택하면 분석이 시작됩니다</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── 4단계 검증 카드 ──
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+    intro_steps = [
+        ("01", "목표가 편차", COLOR["space"], "리포트 목표가가 증권사 평균과 다른 리포트 대비 얼마나 공격적인지 봅니다."),
+        ("02", "발행 이후 괴리", COLOR["time"], "발행 뒤 주가·수급·공시가 리포트가 깔아둔 전제와 달라졌는지 확인합니다."),
+        ("03", "필요 실적", COLOR["logic"], "그 목표가가 성립하려면 EPS가 얼마나 좋아져야 하는지 역산해 과거와 비교합니다."),
+        ("04", "본문 의견", COLOR["primary"], "리포트 본문의 핵심 주장이 서로, 그리고 실제 데이터와 맞아떨어지는지 대조합니다."),
+    ]
+    intro_html = "".join(
+        f"<div style='border:1px solid #E6E9EE;border-radius:12px;padding:18px 18px 20px;"
+        f"background:#FFFFFF;box-shadow:0 1px 2px rgba(16,24,40,0.04)'>"
+        f"<div style='font-size:13px;font-weight:900;color:{color};letter-spacing:1px'>{num}</div>"
+        f"<div style='font-size:16px;font-weight:850;color:#131A24;margin:8px 0 8px'>{title}</div>"
+        f"<div style='font-size:13px;color:#5A6573;line-height:1.55'>{desc}</div>"
+        f"<div style='height:3px;width:32px;background:{color};border-radius:3px;margin-top:14px'></div>"
+        f"</div>"
+        for num, title, color, desc in intro_steps
+    )
+    st.markdown(
+        f"<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:14px'>{intro_html}</div>",
+        unsafe_allow_html=True,
+    )
 
     st.stop()
 
