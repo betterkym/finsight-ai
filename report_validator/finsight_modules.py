@@ -8,10 +8,66 @@ from __future__ import annotations
 
 import statistics
 from collections import Counter
+from statistics import NormalDist
 
 import pandas as pd
 
 from core.kpi_engine import annualize_quarters
+
+# 증권사 목표가 분산을 컨센서스 평균의 12%로 가정한다(국내 커버리지 실증 근사).
+# 네이버는 평균값만 제공하므로, '평균 대비 위치'를 z로 환산할 때 쓰는 표준편차 추정치.
+_ASSUMED_TARGET_CV = 0.12
+
+
+def locate_vs_consensus(target_price: float, consensus: dict) -> dict:
+    """검증 목표가가 시장 컨센서스 평균 대비 어디인지 판단(모듈1, 평균 기반).
+
+    네이버는 증권사별 목표가 리스트 대신 '컨센서스 평균'만 제공한다.
+    개별 분포가 없으므로 평균 대비 괴리율을 표준편차 추정으로 z화한다.
+
+    Args:
+        target_price: 검증할 리포트의 목표가
+        consensus: {"price_target_mean": float, ...}
+
+    Returns:
+        score_space가 읽는 형식(z, top_pct, insufficient 등)을 포함한 dict
+    """
+    mean = (consensus or {}).get("price_target_mean")
+    if not mean or mean <= 0:
+        return {
+            "n": 0, "mean": target_price, "median": target_price, "std": 0.0,
+            "this_target": round(target_price), "top_pct": 50, "z": 0.0,
+            "vs_median_pct": 0.0, "position": "비교 불가", "insufficient": True,
+        }
+
+    gap_pct = (target_price - mean) / mean * 100
+    assumed_std = mean * _ASSUMED_TARGET_CV
+    z = (target_price - mean) / assumed_std if assumed_std else 0.0
+    top_pct = round((1 - NormalDist().cdf(z)) * 100)
+    top_pct = min(99, max(1, top_pct))
+
+    if z > 0.5:
+        position = "평균보다 공격적"
+    elif z < -0.5:
+        position = "평균보다 보수적"
+    else:
+        position = "컨센서스 평균권"
+
+    return {
+        "n": None,  # 증권사 개수는 알 수 없음(평균만 제공)
+        "mean": float(mean),
+        "median": float(mean),
+        "std": float(assumed_std),
+        "this_target": round(target_price),
+        "top_pct": top_pct,
+        "z": round(z, 2),
+        "vs_median_pct": round(gap_pct, 1),
+        "position": position,
+        "insufficient": False,
+        "assumed_std": True,
+        "recomm_label": (consensus or {}).get("opinion_label", ""),
+        "create_date": (consensus or {}).get("create_date", ""),
+    }
 
 
 def reverse_engineer_target(

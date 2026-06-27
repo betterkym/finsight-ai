@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from kpi_engine import annualize_quarters
+from core.kpi_engine import annualize_quarters
 
 
 def calculate_dcf(

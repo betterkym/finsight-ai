@@ -16,6 +16,20 @@ def _days_between(start_ymd: str, end_ymd: str | None = None) -> int:
     return (end - start).days
 
 
+def fetch_price_at_date(stock_code: str, ymd: str) -> float | None:
+    """지정된 날짜의 종가. pykrx 사용, 실패 시 None."""
+    try:
+        from pykrx import stock
+
+        yyyymmdd = ymd.replace("-", "")
+        df = stock.get_market_ohlcv(yyyymmdd, yyyymmdd, stock_code)
+        if not df.empty:
+            return float(df.iloc[0]["종가"])
+    except Exception:
+        pass
+    return None
+
+
 def fetch_foreign_net(stock_code: str, pub_date: str) -> int | None:
     """발행 후 외국인 누적 순매수(억). pykrx 사용, 실패 시 None."""
     try:

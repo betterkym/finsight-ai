@@ -12,7 +12,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from business_focus import build_assumption_recommendations, build_dcf_evidence_bridge
-from data_collector import (
+from core.data_collector import (
     enrich_disclosures_with_snippets, get_capital_structure, get_external_blog_context,
     get_external_driver_snapshot, get_external_news_context, get_macro_snapshot, get_major_shareholding_changes,
     get_market_beta, get_market_snapshot, get_peer_beta_inputs, get_peer_financials,

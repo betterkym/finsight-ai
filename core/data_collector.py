@@ -16,7 +16,8 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).with_name(".env"))
+# core/data_collector.py 기준으로 프로젝트 루트의 .env를 로드
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 DART_API_KEY = os.getenv("DART_API_KEY", "")
 ECOS_API_KEY = os.getenv("ECOS_API_KEY", "")
@@ -125,23 +126,57 @@ def _corp_codes() -> dict[str, dict[str, str]]:
 
 
 def resolve_company(company: str) -> dict[str, str]:
-    """Resolve an exact or close company name to DART and KRX identifiers."""
+    """Resolve an exact or close company name to DART and KRX identifiers.
+
+    1) Exact match if exists
+    2) Partial substring match
+    3) Fuzzy (similarity) match — excludes financial institutions (증권·은행·보험 등)
+    4) Ranks by: similarity score (descending), then shortest name
+    """
+    import difflib
+
     company = company.strip()
     codes = _corp_codes()
+
+    # 1) 종목 코드로 검색
     if company.isdigit() and len(company) == 6:
         for name, value in codes.items():
             if value.get("stock_code") == company:
                 return {"company": name, **value}
         raise ValueError(f"DART에서 종목코드 '{company}'을(를) 찾지 못했습니다.")
+
+    # 2) 정확한 매칭
     if company in codes:
         return {"company": company, **codes[company]}
-    matches = [(name, value) for name, value in codes.items() if company in name]
-    listed = [(name, value) for name, value in matches if value.get("stock_code")]
-    # 분석에는 상장 종목코드가 필요하므로, 상장 부분일치가 없으면 not-found로 처리해
-    # 상위 UI가 유사 후보를 제안(혹시 이걸 찾으셨나요?)하도록 한다.
-    if not listed:
+
+    # 금융기관 제외 필터
+    def is_not_finance(name: str) -> bool:
+        return not any(x in name for x in ["증권", "은행", "보험", "캐피탈", "금융", "펀드", "카드"])
+
+    # 3) 모든 상장 종목 수집
+    all_listed = [
+        (name, value) for name, value in codes.items()
+        if value.get("stock_code")
+    ]
+
+    # 4) 부분 매칭 (substring) — 부분 매칭이 있으면 보너스 점수
+    def fuzzy_score(name: str) -> tuple:
+        sim = difflib.SequenceMatcher(None, company, name).ratio()
+        is_partial = company in name
+        # 부분 매칭이면 유사도에 보너스, 금융기관은 페널티
+        bonus = 0.2 if is_partial else 0
+        penalty = -0.3 if not is_not_finance(name) else 0
+        return (-sim - bonus + penalty, len(name))  # 높은 점수가 낮은 순으로 정렬되게 음수화
+
+    # 금융기관 제외 후보
+    non_finance = [c for c in all_listed if is_not_finance(c[0])]
+    candidates = non_finance if non_finance else all_listed
+
+    if not candidates:
         raise ValueError(f"DART에서 '{company}'을(를) 찾지 못했습니다.")
-    name, value = sorted(listed, key=lambda item: len(item[0]))[0]
+
+    # 점수로 정렬해서 최고 후보 선택
+    name, value = min(candidates, key=lambda item: fuzzy_score(item[0]))
     return {"company": name, **value}
 
 
