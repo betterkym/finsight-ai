@@ -1660,10 +1660,6 @@ st.markdown(
         -moz-osx-font-smoothing: grayscale;
     }
     .stApp { background: #F5F6F8; }
-    h1, h2, h3, h4 { letter-spacing: -0.01em; color: #131A24; }
-    h2 { font-weight: 800 !important; }
-    h3 { font-weight: 800 !important; }
-    h4 { font-weight: 750 !important; }
 
     /* ── Streamlit 기본 군더더기 정리 ── */
     #MainMenu { visibility: hidden; }
@@ -3201,51 +3197,48 @@ with tab6:
         with st.expander("더 자세히 보고 싶어요 — 매출·마진·현금흐름 흐름 보기"):
             kpis_detail = A.get("kpis")
             st.caption(
-                "애널리스트 워크벤치에서 쓰던 분기 실적 트래커입니다. 매출액, OPM, CFO/매출 흐름을 먼저 보고, "
-                "아래 표에서 QoQ/YoY와 현금흐름·운전자본 항목을 확인합니다."
+                "리포트 목표가가 설득력을 가지려면 매출 성장, 영업이익률, CFO/FCF 흐름이 같은 방향으로 받쳐줘야 합니다. "
+                "급변한 분기는 색으로 표시했고, 마우스를 올리면 해당 분기의 숫자와 해석을 볼 수 있습니다."
             )
             if kpis_detail is not None and not kpis_detail.empty:
-                st.plotly_chart(financial_trend_chart(kpis_detail), width="stretch", key="validator_financial_trend_chart")
-                st.dataframe(tracker_style(build_tracker_table(kpis_detail)), width="stretch", height=430)
+                st.plotly_chart(annotated_quarter_chart(kpis_detail, A.get("context", {})), width="stretch", key="validator_annotated_quarter_chart")
 
-                with st.expander("급변 분기와 세부 흐름 더 보기"):
-                    st.plotly_chart(annotated_quarter_chart(kpis_detail, A.get("context", {})), width="stretch", key="validator_annotated_quarter_chart")
-
-                    chart_frame = kpis_detail.set_index("period")
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        st.markdown("##### 전년 대비 성장")
-                        growth_cols = [col for col in ["revenue_yoy", "operating_profit_yoy"] if col in chart_frame]
-                        if growth_cols:
-                            st.line_chart(
-                                chart_frame[growth_cols].rename(columns={
-                                    "revenue_yoy": "매출 YoY",
-                                    "operating_profit_yoy": "영업이익 YoY",
-                                }),
-                                height=230,
-                            )
-                    with col_b:
-                        st.markdown("##### 마진 구조")
-                        margin_cols = [col for col in ["opm", "cogs_ratio", "sga_ratio"] if col in chart_frame]
-                        if margin_cols:
-                            st.line_chart(
-                                chart_frame[margin_cols].rename(columns={
-                                    "opm": "OPM",
-                                    "cogs_ratio": "원가율",
-                                    "sga_ratio": "판관비율",
-                                }),
-                                height=230,
-                            )
-
-                    st.markdown("##### 현금흐름 전환")
-                    cash_cols = [col for col in ["cfo_margin", "fcf_margin"] if col in chart_frame]
-                    if cash_cols:
+                chart_frame = kpis_detail.set_index("period")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown("##### 전년 대비 성장")
+                    growth_cols = [col for col in ["revenue_yoy", "operating_profit_yoy"] if col in chart_frame]
+                    if growth_cols:
                         st.line_chart(
-                            chart_frame[cash_cols].rename(columns={
-                                "cfo_margin": "CFO 마진",
-                                "fcf_margin": "FCF(잉여현금흐름) 마진",
+                            chart_frame[growth_cols].rename(columns={
+                                "revenue_yoy": "매출 YoY",
+                                "operating_profit_yoy": "영업이익 YoY",
                             }),
                             height=230,
                         )
-            else:
-                st.warning("DART 재무가 비어 있어 분기 실적 트래커를 표시하지 못했습니다. 위 DART 연결 상태와 종목 매칭을 먼저 확인하세요.")
+                with col_b:
+                    st.markdown("##### 마진 구조")
+                    margin_cols = [col for col in ["opm", "cogs_ratio", "sga_ratio"] if col in chart_frame]
+                    if margin_cols:
+                        st.line_chart(
+                            chart_frame[margin_cols].rename(columns={
+                                "opm": "OPM",
+                                "cogs_ratio": "원가율",
+                                "sga_ratio": "판관비율",
+                            }),
+                            height=230,
+                        )
+
+                st.markdown("##### 현금흐름 전환")
+                cash_cols = [col for col in ["cfo_margin", "fcf_margin"] if col in chart_frame]
+                if cash_cols:
+                    st.line_chart(
+                        chart_frame[cash_cols].rename(columns={
+                            "cfo_margin": "CFO 마진",
+                            "fcf_margin": "FCF(잉여현금흐름) 마진",
+                        }),
+                        height=230,
+                    )
+
+                st.markdown("##### 분기별 원자료")
+                st.dataframe(build_tracker_table(kpis_detail), width="stretch", height=360)
