@@ -1086,7 +1086,7 @@ def get_external_driver_snapshot(company: str, stock_code: str) -> dict:
             "KOSIS",
             bool(KOSIS_API_KEY and KOSIS_FOOD_TABLE_ID),
             "식품산업·소비·물가 세부통계 연결" if KOSIS_API_KEY and KOSIS_FOOD_TABLE_ID else "KOSIS_API_KEY와 KOSIS_FOOD_TABLE_ID 필요",
-            action="국내 산업 성장률/수요 proxy로 매출 가정 검증",
+            action="국내 산업 성장률·수요 흐름을 매출 전망과 대조",
             evidence_level="Official statistics",
         ),
         _status(

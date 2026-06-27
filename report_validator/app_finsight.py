@@ -3,9 +3,10 @@
 증권사 리포트의 목표가와 투자의견을 DART 재무·공시, KRX 주가·수급,
 증권사 목표가 평균, 발행 이후 공시·뉴스·지분 변동으로 다시 대조해
 신뢰도 점수와 종합 해석 보고서를 제공한다.
-  ① 분포 위치: 다른 증권사와 비교해 목표가가 어디 위치하는가
-  ② 발행 후 변화: 발행 후 기업 상황과 주가가 바뀌었는가
-  ③ 가정 검증: 목표가를 위해 필요한 성장률이 현실적인가
+  ① 목표가 편차: 다른 증권사와 비교해 목표가가 얼마나 높은가
+  ② 발행 이후 괴리: 발행 후 주가·수급·공시가 리포트와 어긋났는가
+  ③ 필요 실적: 목표가를 위해 필요한 성장률이 현실적인가
+  ④ 본문 의견 검증: 리포트 안의 핵심 의견이 서로/팩트와 맞는가
 """
 from __future__ import annotations
 
@@ -43,6 +44,7 @@ from report_validator.retail_report import generate_retail_html_report, generate
 from report_validator.evidence_audit import (
     build_data_source_logic,
     build_kpi_snapshot,
+    build_scoring_rulebook,
     build_score_audit,
     build_source_audit,
     build_update_audit,
@@ -212,14 +214,32 @@ def _clean_report_name(file_name: str) -> str:
 
 
 def report_identity(item: dict) -> str:
-    broker = item.get("broker") or "증권사 추출 필요"
-    date = item.get("pub_date") or "발행일 추출 필요"
+    broker = item.get("broker") or "증권사 확인 필요"
+    date = item.get("pub_date") or "발행일 확인 필요"
     title = item.get("title") or _clean_report_name(item.get("file_name", "업로드 리포트"))
     return f"{broker} · {date} · {title}"
 
 
 def reports_missing_target(reports: list[dict]) -> list[dict]:
     return [item for item in reports if not item.get("target_price")]
+
+
+def comparable_reports(reports: list[dict]) -> list[dict]:
+    """Reports usable in the target-price/opinion comparison table."""
+    return [item for item in reports if item.get("target_price") and item.get("opinion")]
+
+
+def missing_comparison_notes(reports: list[dict]) -> list[str]:
+    notes = []
+    for item in reports:
+        missing = []
+        if not item.get("target_price"):
+            missing.append("목표가 인식 불가")
+        if not item.get("opinion"):
+            missing.append("투자의견 인식 불가")
+        if missing:
+            notes.append(f"{report_identity(item)}: {', '.join(missing)}로 재확인 필요")
+    return notes
 
 
 def _parse_report_date(text: str) -> str:
@@ -331,26 +351,23 @@ def extract_report_metadata(file_name: str, text: str) -> dict:
 
 def build_report_comparison_rows(reports: list[dict], mean_target: float | None) -> list[dict]:
     rows = []
-    for item in reports:
+    for item in comparable_reports(reports):
         target = item.get("target_price")
         gap = None
-        upside = None
         if target and mean_target:
             gap = (target / mean_target - 1) * 100
-        verdict = "목표가 추출 필요"
+        verdict = "평균권"
         if gap is not None:
             if gap >= 15:
                 verdict = "평균보다 공격적"
             elif gap <= -15:
                 verdict = "평균보다 보수적"
-            else:
-                verdict = "평균권"
         rows.append({
             "리포트": item.get("title") or item.get("file_name") or "업로드 리포트",
-            "증권사": item.get("broker") or "추출 필요",
-            "발행일": item.get("pub_date") or "추출 필요",
-            "투자의견": item.get("opinion") or "추출 필요",
-            "목표가": f"{target:,.0f}원" if target else "추출 필요",
+            "증권사": item.get("broker") or "확인 필요",
+            "발행일": item.get("pub_date") or "확인 필요",
+            "투자의견": item.get("opinion") or "",
+            "목표가": f"{target:,.0f}원",
             "평균 대비": f"{gap:+.1f}%" if gap is not None else "N/A",
             "판정": verdict,
             "목표가 근거": item.get("target_evidence") or "원문에서 목표가 문장을 찾지 못했습니다.",
@@ -362,7 +379,9 @@ def report_batch_stats(reports: list[dict]) -> dict:
     targets = sorted(int(item["target_price"]) for item in reports if item.get("target_price"))
     opinions: dict[str, int] = {}
     for item in reports:
-        opinion = item.get("opinion") or "추출 필요"
+        opinion = item.get("opinion")
+        if not opinion:
+            continue
         opinions[opinion] = opinions.get(opinion, 0) + 1
     dates = []
     for item in reports:
@@ -378,11 +397,11 @@ def report_batch_stats(reports: list[dict]) -> dict:
     majority_opinion = ""
     if opinions:
         majority_opinion = max(opinions.items(), key=lambda pair: pair[1])[0]
-        if majority_opinion == "추출 필요":
-            majority_opinion = ""
     return {
         "count": len(reports),
         "target_count": len(targets),
+        "comparison_count": len(comparable_reports(reports)),
+        "opinion_count": sum(opinions.values()),
         "min_target": targets[0] if targets else None,
         "max_target": targets[-1] if targets else None,
         "median_target": median,
@@ -390,6 +409,278 @@ def report_batch_stats(reports: list[dict]) -> dict:
         "latest_date": max(dates).isoformat() if dates else "",
         "opinions": opinions,
         "majority_opinion": majority_opinion,
+    }
+
+
+REPORT_THEME_RULES = [
+    {
+        "theme": "실적 성장",
+        "keywords": ["매출", "성장", "실적", "외형", "판매", "수요"],
+        "question": "리포트가 말한 성장 스토리가 최근 실적 숫자로 확인되는가",
+    },
+    {
+        "theme": "수익성·마진",
+        "keywords": ["영업이익", "수익성", "마진", "OPM", "원가율", "판관비", "이익률"],
+        "question": "매출 성장뿐 아니라 이익률도 같이 좋아지고 있는가",
+    },
+    {
+        "theme": "해외·수출",
+        "keywords": ["해외", "수출", "미국", "중국", "일본", "글로벌", "법인", "수출액"],
+        "question": "해외 성장 논리가 공시·뉴스·실적 흐름과 맞는가",
+    },
+    {
+        "theme": "원가·비용",
+        "keywords": ["원가", "비용", "판관비", "광고", "인건비", "운임", "환율", "원재료"],
+        "question": "비용 부담이 목표가 가정을 훼손하지 않는가",
+    },
+    {
+        "theme": "주가·수급",
+        "keywords": ["주가", "수급", "외국인", "기관", "멀티플", "밸류에이션", "리레이팅", "디레이팅"],
+        "question": "리포트 방향과 실제 가격·수급 반응이 맞는가",
+    },
+    {
+        "theme": "현금흐름·투자",
+        "keywords": ["현금흐름", "CFO", "FCF", "CAPEX", "투자", "재고", "운전자본"],
+        "question": "회계상 이익이 실제 현금흐름으로 이어지는가",
+    },
+]
+
+POSITIVE_WORDS = ["성장", "개선", "확대", "회복", "상향", "증가", "호조", "수혜", "기대", "견조", "긍정", "리레이팅"]
+NEGATIVE_WORDS = ["부담", "둔화", "하락", "악화", "감소", "리스크", "우려", "비용", "적자", "부진", "압박", "불확실"]
+
+
+def _split_report_sentences(text: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not cleaned:
+        return []
+    parts = re.split(r"(?<=[.!?。])\s+|(?<=[다요음임])\.\s+|[\n\r]+", cleaned)
+    return [part.strip() for part in parts if 24 <= len(part.strip()) <= 260][:350]
+
+
+def _stance_of(text: str) -> str:
+    pos = sum(1 for word in POSITIVE_WORDS if word.lower() in text.lower())
+    neg = sum(1 for word in NEGATIVE_WORDS if word.lower() in text.lower())
+    if pos > neg:
+        return "긍정"
+    if neg > pos:
+        return "부담"
+    return "중립"
+
+
+def _objective_theme_read(theme: str, analysis: dict) -> str:
+    kpis = analysis.get("kpis")
+    latest = kpis.iloc[-1] if kpis is not None and not kpis.empty else {}
+    timeline = analysis.get("timeline") or {}
+    price_action = analysis.get("price_action") or {}
+
+    revenue_yoy = _num(latest.get("revenue_yoy"))
+    op_yoy = _num(latest.get("operating_profit_yoy"))
+    opm_yoy = _num(latest.get("opm_yoy_pp"))
+    cfo_margin = _num(latest.get("cfo_margin"))
+    fcf_margin = _num(latest.get("fcf_margin"))
+    cogs_yoy = _num(latest.get("cogs_ratio_yoy_pp"))
+    sga_yoy = _num(latest.get("sga_ratio_yoy_pp"))
+
+    if theme == "실적 성장":
+        if revenue_yoy is not None and op_yoy is not None:
+            if revenue_yoy > 0 and op_yoy > 0:
+                return f"DART 최근 분기 매출 {revenue_yoy:+.1f}%, 영업이익 {op_yoy:+.1f}%로 성장 논리는 숫자로 일부 확인됩니다."
+            return f"DART 최근 분기 매출 {revenue_yoy:+.1f}%, 영업이익 {op_yoy:+.1f}%라 성장 논리는 선별적으로 봐야 합니다."
+    if theme == "수익성·마진":
+        if opm_yoy is not None:
+            return f"OPM이 전년 동기 대비 {opm_yoy:+.1f}%p 변했습니다. 마진 개선 논리는 이 값과 함께 판단해야 합니다."
+    if theme == "원가·비용":
+        cost_bits = []
+        if cogs_yoy is not None:
+            cost_bits.append(f"원가율 {cogs_yoy:+.1f}%p")
+        if sga_yoy is not None:
+            cost_bits.append(f"판관비율 {sga_yoy:+.1f}%p")
+        if cost_bits:
+            return "최근 분기 " + ", ".join(cost_bits) + " 변동이 확인됩니다. 비용 부담을 낮게 본 리포트는 재확인이 필요합니다."
+    if theme == "현금흐름·투자":
+        if cfo_margin is not None or fcf_margin is not None:
+            return f"CFO 마진 {_fmt_pct(cfo_margin)}, FCF(잉여현금흐름) 마진 {_fmt_pct(fcf_margin)}입니다. 이익이 현금으로 바뀌는지 확인해야 합니다."
+    if theme == "주가·수급":
+        return f"발행 이후 수익률 {_fmt_pct(timeline.get('realized'))}, 외국인 누적 순매수 {timeline.get('foreign_net', 0):+,}억원입니다. 리포트 방향과 가격 반응을 분리해서 봐야 합니다."
+    if theme == "해외·수출":
+        disclosures = len((analysis.get("context") or {}).get("disclosures", []) or [])
+        news = len((analysis.get("context") or {}).get("news", []) or [])
+        return f"해외 성장 논리는 DART 단일 재무만으로는 직접 분해가 제한됩니다. 발행 이후 공시 {disclosures}건, 뉴스 {news}건을 보조 근거로 대조합니다."
+    return price_action.get("thesis") or "객관 데이터와 함께 재확인이 필요한 논점입니다."
+
+
+def analyze_report_content_batch(analysis: dict) -> dict:
+    reports = [item for item in analysis.get("report_batch", []) if item.get("text_excerpt")]
+    if not reports and (analysis.get("report") or {}).get("text_excerpt"):
+        reports = [analysis["report"]]
+    if not reports:
+        return {"theme_rows": [], "claim_rows": [], "summary": ""}
+    theme_rows = []
+    claim_rows = []
+    for rule in REPORT_THEME_RULES:
+        hits = []
+        stances = []
+        for item in reports:
+            sentences = _split_report_sentences(item.get("text_excerpt", ""))
+            matched = [
+                sentence for sentence in sentences
+                if any(keyword.lower() in sentence.lower() for keyword in rule["keywords"])
+            ][:2]
+            if not matched:
+                continue
+            combined = " / ".join(matched)
+            stance = _stance_of(combined)
+            stances.append(stance)
+            label = item.get("broker") or item.get("title") or item.get("file_name") or "리포트"
+            hits.append(f"{label}: {stance}")
+            claim_rows.append({
+                "논점": rule["theme"],
+                "리포트": label,
+                "방향": stance,
+                "본문 근거": _short_summary(combined, 180),
+            })
+        if not hits:
+            continue
+        unique_stances = {stance for stance in stances}
+        stance_counts = {stance: stances.count(stance) for stance in sorted(unique_stances)}
+        if "긍정" in unique_stances and "부담" in unique_stances:
+            read = "리포트 간 해석이 갈립니다."
+            verdict = "의견 차이"
+        elif "긍정" in unique_stances:
+            read = "대부분 긍정적으로 해석합니다."
+            verdict = "긍정 우세"
+        elif "부담" in unique_stances:
+            read = "대부분 부담 요인으로 봅니다."
+            verdict = "부담 우세"
+        else:
+            read = "방향성은 중립적입니다."
+            verdict = "중립"
+        objective = _objective_theme_read(rule["theme"], analysis)
+        theme_rows.append({
+            "논점": rule["theme"],
+            "판단 질문": rule["question"],
+            "언급 리포트": f"{len(hits)}/{len(reports)}개",
+            "리포트 간 차이": " · ".join(hits[:4]),
+            "FinSight 대조": objective,
+            "판정": verdict,
+            "방향 분포": stance_counts,
+            "해석": f"{read} {objective}",
+        })
+    common = [row["논점"] for row in theme_rows if row["언급 리포트"].startswith(str(len(reports)) + "/")]
+    mixed = [row["논점"] for row in theme_rows if "갈립니다" in row["해석"]]
+    summary_bits = []
+    if common:
+        summary_bits.append(f"공통 논점은 {', '.join(common[:3])}입니다.")
+    if mixed:
+        summary_bits.append(f"의견이 갈리는 부분은 {', '.join(mixed[:3])}입니다.")
+    if not summary_bits and theme_rows:
+        summary_bits.append("리포트별 강조점이 분산되어 있어 목표가 숫자뿐 아니라 본문 논점별 비교가 필요합니다.")
+    return {"theme_rows": theme_rows, "claim_rows": claim_rows[:18], "summary": " ".join(summary_bits)}
+
+
+def _objective_read_has_tension(text: str) -> bool:
+    tension_words = [
+        "선별", "재확인", "부담", "약", "제한", "낮", "눌", "훼손",
+        "불확실", "보수", "덜", "지연", "부족",
+    ]
+    return any(word in str(text or "") for word in tension_words)
+
+
+def assess_report_content_consistency(content: dict) -> dict:
+    rows = content.get("theme_rows") or []
+    if not rows:
+        return {
+            "label": "본문 미반영",
+            "score": None,
+            "max": 20,
+            "penalty": 0,
+            "reason": "PDF 본문을 읽지 못해 본문 의견 검증은 점수 차감에 반영하지 않았습니다.",
+            "factors": [],
+            "divergent_count": 0,
+            "optimistic_gap_count": 0,
+        }
+
+    divergent = [row for row in rows if row.get("판정") == "의견 차이"]
+    optimistic_gap = [
+        row for row in rows
+        if (row.get("방향 분포") or {}).get("긍정", 0) > 0
+        and _objective_read_has_tension(row.get("FinSight 대조", ""))
+    ]
+
+    penalty = min(4, len(divergent) * 2) + min(8, len(optimistic_gap) * 3)
+    penalty = min(10, penalty)
+    score = max(0, 20 - penalty)
+
+    factors = []
+    if optimistic_gap:
+        sample = optimistic_gap[0]
+        factors.append({
+            "title": "본문에서 좋게 본 부분이 숫자로는 덜 확인됨",
+            "impact": "신뢰도 차감",
+            "reason": f"{sample.get('논점')}을 긍정적으로 본 리포트가 있지만, 실제 데이터 대조에서는 보수적으로 봐야 할 근거가 같이 확인됩니다.",
+            "evidence": sample.get("FinSight 대조", ""),
+            "points": min(8, len(optimistic_gap) * 3),
+            "severity": "Content",
+        })
+    if divergent:
+        sample = divergent[0]
+        factors.append({
+            "title": "리포트끼리 해석이 갈리는 부분",
+            "impact": "신뢰도 차감",
+            "reason": f"{sample.get('논점')}에 대해 증권사별 해석이 한 방향으로 모이지 않습니다.",
+            "evidence": sample.get("리포트 간 차이", ""),
+            "points": min(4, len(divergent) * 2),
+            "severity": "Content",
+        })
+
+    if penalty >= 7:
+        label = "낙관 해석 주의"
+    elif penalty >= 3:
+        label = "일부 재확인"
+    else:
+        label = "큰 충돌 제한"
+
+    reason_bits = []
+    if divergent:
+        reason_bits.append(f"의견 차이 {len(divergent)}개")
+    if optimistic_gap:
+        reason_bits.append(f"데이터로 덜 확인된 긍정 해석 {len(optimistic_gap)}개")
+    reason = " · ".join(reason_bits) if reason_bits else "본문 핵심 의견과 현재 데이터 사이의 큰 충돌은 제한적입니다."
+
+    return {
+        "label": label,
+        "score": score,
+        "max": 20,
+        "penalty": penalty,
+        "reason": reason,
+        "factors": factors,
+        "divergent_count": len(divergent),
+        "optimistic_gap_count": len(optimistic_gap),
+    }
+
+
+def merge_content_assessment_into_alignment(alignment: dict, content_assessment: dict) -> dict:
+    if not content_assessment:
+        return alignment
+    factors = list(alignment.get("factors", []))
+    content_factors = content_assessment.get("factors") or []
+    if content_factors:
+        factors = content_factors + factors
+    penalty = min(24, int(alignment.get("penalty", 0)) + int(content_assessment.get("penalty", 0)))
+    if penalty >= 14:
+        label = "중요 불일치"
+    elif penalty >= 7:
+        label = "부분 불일치"
+    elif penalty > 0:
+        label = "경미한 차감"
+    else:
+        label = alignment.get("label", "큰 충돌 제한")
+    return {
+        **alignment,
+        "label": label,
+        "penalty": penalty,
+        "factors": factors[:7],
+        "content_assessment": content_assessment,
     }
 
 
@@ -416,9 +707,9 @@ def report_batch_conclusion(analysis: dict) -> str:
             f"현재 주가·발행일 이후 변화·목표가 편차를 함께 보면 {summary['best_broker']} 리포트가 "
             f"현재 데이터와 가장 덜 어긋납니다{score_text}. {summary.get('best_reason', '')}"
         )
-    missing = reports_missing_target(reports)
-    if missing:
-        parts.append(f"다만 목표가를 읽지 못한 {len(missing)}개 리포트는 목표가 기반 계산에서 제외했습니다.")
+    missing_notes = missing_comparison_notes(reports)
+    if missing_notes:
+        parts.append(f"다만 핵심 항목을 읽지 못한 {len(missing_notes)}개 리포트는 목표가·투자의견 비교표에서 제외했습니다.")
     return " ".join(parts)
 
 
@@ -431,18 +722,24 @@ def render_report_batch_distribution(analysis: dict) -> None:
     st.markdown("#### 증권사별 목표가·투자의견 비교")
     d1, d2, d3, d4 = st.columns(4)
     with d1:
-        st.metric("비교 리포트", f"{stats['count']}개")
+        st.metric("비교 리포트", f"{stats['comparison_count']}/{stats['count']}개")
     with d2:
-        st.metric("목표가 중앙값", f"{stats['median_target']:,.0f}원" if stats.get("median_target") else "추출 필요")
+        st.metric("목표가 중앙값", f"{stats['median_target']:,.0f}원" if stats.get("median_target") else "직접 입력 필요")
     with d3:
-        target_range = "추출 필요"
+        target_range = "직접 입력 필요"
         if stats.get("min_target") and stats.get("max_target"):
             target_range = f"{stats['min_target']:,.0f}~{stats['max_target']:,.0f}원"
         st.metric("목표가 범위", target_range)
     with d4:
-        opinion_text = " · ".join(f"{key} {value}" for key, value in stats.get("opinions", {}).items()) or "추출 필요"
+        opinion_text = " · ".join(f"{key} {value}" for key, value in stats.get("opinions", {}).items()) or "확인된 의견 없음"
         st.metric("투자의견 분포", opinion_text)
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("목표가와 투자의견이 모두 확인된 리포트가 아직 없습니다.")
+    notes = missing_comparison_notes(reports)
+    for note in notes[:5]:
+        st.caption(f"* {note}")
     conclusion = report_batch_conclusion(analysis)
     if conclusion:
         st.info(conclusion)
@@ -459,27 +756,26 @@ def render_report_batch_overview(analysis: dict) -> None:
     st.markdown("#### 업로드 리포트 비교")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric("업로드 리포트", f"{stats['count']}개")
+        st.metric("비교 리포트", f"{stats['comparison_count']}/{stats['count']}개")
     with c2:
         target_range = "N/A"
         if stats["min_target"] and stats["max_target"]:
             target_range = f"{stats['min_target']:,.0f}~{stats['max_target']:,.0f}원"
         st.metric("목표가 범위", target_range)
     with c3:
-        st.metric("중앙 목표가", f"{stats['median_target']:,.0f}원" if stats["median_target"] else "추출 필요")
+        st.metric("중앙 목표가", f"{stats['median_target']:,.0f}원" if stats["median_target"] else "직접 입력 필요")
     with c4:
-        opinion_text = " · ".join(f"{key} {value}" for key, value in stats["opinions"].items()) or "추출 필요"
+        opinion_text = " · ".join(f"{key} {value}" for key, value in stats["opinions"].items()) or "확인된 의견 없음"
         st.metric("투자의견 분포", opinion_text)
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    if stats["target_count"] < stats["count"]:
-        missing = reports_missing_target(reports)
-        missing_names = " / ".join(report_identity(item) for item in missing[:4])
-        suffix = f" 외 {len(missing) - 4}개" if len(missing) > 4 else ""
-        st.warning(
-            f"목표가를 자동으로 읽지 못한 리포트: {missing_names}{suffix}. "
-            "이 리포트는 중앙 목표가 계산과 현실 부합도 점수에서 제외했습니다. "
-            "반영하려면 왼쪽 사이드바의 '목표가 직접 입력'에 원문 목표가를 입력하세요."
-        )
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    notes = missing_comparison_notes(reports)
+    for note in notes[:5]:
+        st.caption(f"* {note}")
+    if len(notes) > 5:
+        st.caption(f"* 외 {len(notes) - 5}개 리포트도 재확인이 필요합니다.")
+    if notes:
+        st.caption("* 위 리포트는 목표가·투자의견 비교표와 중앙 목표가 계산에서 제외했습니다. 반영하려면 왼쪽 사이드바에서 원문 목표가를 직접 입력하세요.")
 
 
 def _num(value) -> float | None:
@@ -514,7 +810,7 @@ def _batch_fit_score(
     opinion: str,
 ) -> tuple[float | None, str]:
     if target is None or price_at_pub is None or current_price <= 0:
-        return None, "목표가 또는 발행일 주가 추출 필요"
+        return None, "목표가 또는 발행일 주가 확인 필요"
     score = 78.0
     reasons = []
     realized = (current_price / price_at_pub - 1) * 100
@@ -555,7 +851,7 @@ def build_batch_post_publish_analysis(
     consensus_mean = (consensus or {}).get("price_target_mean")
     rows = []
     raw_rows = []
-    for item in reports:
+    for item in comparable_reports(reports):
         pub_date = item.get("pub_date") or ""
         price_at_pub = None
         if pub_date and stock_code:
@@ -575,16 +871,16 @@ def build_batch_post_publish_analysis(
             opinion=item.get("opinion") or "",
         )
         row = {
-            "증권사": item.get("broker") or "추출 필요",
-            "발행일": pub_date or "추출 필요",
-            "투자의견": item.get("opinion") or "추출 필요",
+            "증권사": item.get("broker") or "확인 필요",
+            "발행일": pub_date or "확인 필요",
+            "투자의견": item.get("opinion") or "",
             "목표가": _fmt_won(target),
             "발행일 주가": _fmt_won(price_at_pub),
             "발행 후 주가 변화": _fmt_pct(realized),
             "발행 당시 상승여력": _fmt_pct(upside_at_pub),
             "현재 남은 여력": _fmt_pct(remaining),
             "목표가 평균 대비": _fmt_pct(dist_gap),
-            "현실 부합도": f"{score:.0f}점" if score is not None else "추출 필요",
+            "현실 부합도": f"{score:.0f}점" if score is not None else "계산 제외",
             "판단 근거": reason,
         }
         rows.append(row)
@@ -844,8 +1140,8 @@ def build_post_report_events(context: dict, report_date: str) -> list[dict]:
 PRODUCT_TITLE = "FinSight — 리포트 신뢰도 검증"
 PRODUCT_COPY = (
     "증권사 리포트를 그대로 받아들이기 전에 DART 재무·공시, KRX 주가·수급, "
-    "증권사 목표가 평균, 발행 이후 뉴스·지분 변동을 대조합니다. "
-    "목표가와 투자의견을 어느 정도 신뢰할 수 있는지 점수화하고, 현재 주가와의 차이를 해석합니다."
+    "증권사 목표가 평균, 발행 이후 뉴스·지분 변동, 업로드한 리포트 본문을 대조합니다. "
+    "목표가와 투자의견을 어느 정도 신뢰할 수 있는지 점수화하고, 현재 주가와의 차이까지 해석합니다."
 )
 
 
@@ -924,7 +1220,7 @@ st.markdown(
     }
     .fs-map {
         display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 10px;
         margin-top: 10px;
     }
@@ -962,11 +1258,12 @@ def render_validation_flow(compact: bool = False) -> None:
             """
             <div class="fs-logic-wrap">
               <div class="fs-logic-kicker">검증 순서</div>
-              <div class="fs-logic-title">리포트 신뢰도를 세 단계로 확인합니다</div>
+              <div class="fs-logic-title">리포트 신뢰도를 네 단계로 확인합니다</div>
               <div class="fs-map">
-                <div class="fs-map-step"><b>편차</b><span>목표가가 증권사 목표가 평균 대비 어느 구간에 있는지 확인합니다.</span></div>
-                <div class="fs-map-step"><b>발행 후 변화</b><span>발행 이후 가격과 수급이 리포트 전제와 어긋났는지 봅니다.</span></div>
-                <div class="fs-map-step"><b>가정</b><span>목표가에 필요한 EPS 성장률을 역산해 과거 실적과 대조합니다.</span></div>
+                <div class="fs-map-step"><b>목표가 편차</b><span>각 리포트 목표가가 증권사 평균과 다른 리포트 대비 얼마나 높은지 봅니다.</span></div>
+                <div class="fs-map-step"><b>발행 이후 괴리</b><span>리포트 발행 뒤 주가·수급·공시가 리포트 전제와 달라졌는지 봅니다.</span></div>
+                <div class="fs-map-step"><b>필요 실적</b><span>목표가가 성립하려면 EPS가 얼마나 좋아져야 하는지 역산합니다.</span></div>
+                <div class="fs-map-step"><b>본문 의견</b><span>리포트 안의 핵심 의견이 서로와 실제 데이터에 맞는지 대조합니다.</span></div>
               </div>
             </div>
             """,
@@ -978,16 +1275,17 @@ def render_validation_flow(compact: bool = False) -> None:
         """
         <div class="fs-logic-wrap">
           <div class="fs-logic-kicker">검증 흐름</div>
-          <div class="fs-logic-title">리포트 목표가를 입력하면 편차, 발행 후 변화, 가정을 순서대로 확인합니다</div>
+          <div class="fs-logic-title">리포트 목표가와 본문 의견을 실제 데이터와 순서대로 대조합니다</div>
           <div class="fs-logic-copy">
             목표가가 시장 평균보다 얼마나 높은지, 발행 뒤 전제가 바뀌었는지,
-            그 가격을 만들려면 실적이 얼마나 좋아져야 하는지를 한 번에 봅니다.
+            그 가격을 만들려면 실적이 얼마나 좋아져야 하는지, 본문 의견이 숫자로 확인되는지 봅니다.
           </div>
           <div class="fs-logic-grid">
             <div class="fs-logic-node"><strong>입력</strong><span>종목, 증권사, 발행일, 목표가, 투자의견을 기준점으로 둡니다.</span></div>
-            <div class="fs-logic-node"><strong>편차</strong><span>증권사 목표가 평균 대비 높낮이를 계산해 목표가의 공격성을 봅니다.</span></div>
-            <div class="fs-logic-node"><strong>발행 후 변화</strong><span>발행일 이후 주가 변화와 외국인 수급을 함께 확인합니다.</span></div>
-            <div class="fs-logic-node"><strong>가정</strong><span>필요 EPS 성장률을 역산하고 과거 평균·중앙값 성장률과 비교합니다.</span></div>
+            <div class="fs-logic-node"><strong>목표가 편차</strong><span>증권사 목표가 평균과 업로드 리포트들 사이에서 얼마나 공격적인지 봅니다.</span></div>
+            <div class="fs-logic-node"><strong>발행 이후 괴리</strong><span>발행일 이후 주가·수급·공시가 리포트 방향과 어긋났는지 확인합니다.</span></div>
+            <div class="fs-logic-node"><strong>필요 실적</strong><span>목표가에 필요한 EPS 성장률을 과거 평균·중앙값 성장률과 비교합니다.</span></div>
+            <div class="fs-logic-node"><strong>본문 의견</strong><span>PDF 본문에서 공통으로 말한 내용과 증권사별로 갈리는 해석을 DART·수급 데이터와 대조합니다.</span></div>
           </div>
         </div>
         """,
@@ -1014,7 +1312,7 @@ def render_product_header() -> None:
 st.sidebar.markdown("### 리포트 신뢰도 검증")
 st.sidebar.caption(
     "증권사 리포트의 목표가와 투자의견을 DART 재무·공시, KRX 주가·수급, "
-    "발행 이후 뉴스로 대조해 신뢰도를 점수화하고 현재 주가와의 차이를 해석하는 도구"
+    "발행 이후 뉴스, 리포트 본문 내용과 대조해 신뢰도를 점수화하고 현재 주가와의 차이를 해석하는 도구"
 )
 st.sidebar.divider()
 
@@ -1257,7 +1555,7 @@ st.sidebar.caption("💡 종목 검색 → 증권사 목표가 평균 확인 →
 # ──────────────────────────────────────────────
 # 데이터 분석
 # ──────────────────────────────────────────────
-@st.cache_data(show_spinner="🔬 3축 검증 중...")
+@st.cache_data(show_spinner="🔬 리포트 검증 중...")
 def load_analysis(company_name: str, report_date: str, target_price: int,
                   consensus: dict = None, sel_broker: str = "",
                   sel_opinion: str = "매수", report_title: str = "",
@@ -1267,7 +1565,7 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
                   report_target_evidence: str = "",
                   report_batch: list[dict] | None = None,
                   cache_version: int = 2):
-    """검증할 리포트 목표가 기반 3축 검증.
+    """검증할 리포트 목표가 기반 검증.
 
     실제 DART 재무 수집을 우선하고, 실패 시 농심 데모로 폴백한다.
     ①축은 네이버 증권사 목표가 평균 대비 위치로 판단한다.
@@ -1311,7 +1609,7 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         dcf=None, multiples=multiples, current_price=price,
     )
 
-    # ③ 가정 검증 (역산)
+    # ③ 필요 실적 (목표가 역산)
     reverse = reverse_engineer_target(
         target_price=target_price, kpis=kpis,
         shares_outstanding=shares, current_price=price,
@@ -1329,10 +1627,10 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         context.get("blogs", []),
     )
 
-    # ① 분포 위치 (네이버 증권사 목표가 평균 대비 위치)
+    # ① 목표가 편차 (네이버 증권사 목표가 평균 대비 위치)
     distribution = locate_vs_consensus(target_price, consensus)
 
-    # ② 발행 후 변화
+    # ② 발행 이후 괴리
     timeline = build_post_publish_timeline(
         report={
             "pub_date": report_date,
@@ -1367,6 +1665,15 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         "has_uploaded_file": bool(report_file_name),
         "batch_count": len(report_batch or []),
     }
+    content_analysis = analyze_report_content_batch({
+        "report": report_payload,
+        "report_batch": report_batch or [],
+        "kpis": kpis,
+        "timeline": timeline,
+        "context": context,
+        "price_action": price_action,
+    })
+    content_assessment = assess_report_content_consistency(content_analysis)
 
     # 종합 신뢰도
     verdict = build_report_verdict(
@@ -1381,6 +1688,7 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         reverse=reverse,
         price_action=price_action,
     )
+    alignment = merge_content_assessment_into_alignment(alignment, content_assessment)
     verdict = apply_alignment_to_verdict(verdict, alignment)
 
     return {
@@ -1397,6 +1705,8 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         "report_batch_timeline": batch_timeline,
         "verdict": verdict,
         "alignment": alignment,
+        "report_content": content_analysis,
+        "report_content_assessment": content_assessment,
         "context": context,
         "research": research,
         "price_action": price_action,
@@ -1431,21 +1741,26 @@ if A is None:
     st.info(PRODUCT_COPY)
     st.divider()
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.markdown("#### ① 분포 위치")
-        st.markdown("목표가가 다른 증권사와 비교해 어디에 있는가")
+        st.markdown("#### ① 목표가 편차")
+        st.markdown("리포트 목표가가 평균과 다른 리포트 대비 얼마나 높은가")
     with col2:
-        st.markdown("#### ② 발행 후 변화")
-        st.markdown("리포트 발행 후 기업·주가 상황이 바뀌었는가")
+        st.markdown("#### ② 발행 이후 괴리")
+        st.markdown("발행 뒤 주가·수급·공시가 리포트 방향과 달라졌는가")
     with col3:
-        st.markdown("#### ③ 가정 검증")
-        st.markdown("목표가 달성을 위한 성장률이 현실적인가")
+        st.markdown("#### ③ 필요 실적")
+        st.markdown("목표가가 성립하려면 EPS가 얼마나 좋아져야 하는가")
+    with col4:
+        st.markdown("#### ④ 본문 의견")
+        st.markdown("리포트 안의 핵심 의견이 서로와 실제 데이터에 맞는가")
 
     st.stop()
 
 # 이후는 A가 있을 때만 실행
 co, rep, V = A["company"], A["report"], A["verdict"]
+content_view = A.get("report_content") or analyze_report_content_batch(A)
+content_assessment = A.get("report_content_assessment") or assess_report_content_consistency(content_view)
 
 # ──────────────────────────────────────────────
 # 헤더
@@ -1477,7 +1792,7 @@ if A.get("is_demo_financials"):
     st.warning(
         f"⚠️ **{co['name']}의 실제 재무를 DART에서 가져오지 못해 농심 데모 재무로 계산했습니다.** "
         f"(완전연도 EPS 부족 또는 종목 매칭 실패) "
-        f"목표가 분포(①축)는 검색값을 반영하지만, 발행 후 변화(②축)·가정 검증(③축)은 데모입니다."
+        f"목표가 편차(①축)는 검색값을 반영하지만, 발행 이후 괴리(②축)·필요 실적(③축)은 데모입니다."
     )
 else:
     st.caption(f"✅ 실제 DART 재무 연동 — 현재가 {co['current_price']:,.0f}원 · 발행주식수 {co['shares_outstanding']:,.0f}주")
@@ -1518,7 +1833,7 @@ with sc1:
 with sc2:
     st.markdown("<div style='height:42px'></div>", unsafe_allow_html=True)
     st.markdown("#### 세부 점수")
-    for key, title in [("space", "분포 위치"), ("time", "발행 후 변화"), ("logic", "가정 검증")]:
+    for key, title in [("space", "목표가 편차"), ("time", "발행 이후 괴리"), ("logic", "필요 실적")]:
         ax = V["axes"][key]
         if ax.get("uncounted"):
             st.markdown(
@@ -1542,6 +1857,10 @@ with sc2:
                 f"</div>",
                 unsafe_allow_html=True,
             )
+    content_penalty = content_assessment.get("penalty", 0)
+    content_label = content_assessment.get("label", "본문 미반영")
+    penalty_text = "차감 없음" if not content_penalty else f"-{content_penalty}점"
+    st.caption(f"본문 의견 검증: {content_label} · 객관분석 {penalty_text}")
 
 st.markdown("#### 평가 의견")
 st.markdown(f"**{V['headline']}**")
@@ -1560,12 +1879,12 @@ if alignment:
 st.divider()
 
 # ──────────────────────────────────────────────
-# 3축 신호 카드
+# 핵심 신호 카드
 # ──────────────────────────────────────────────
 def signal_icon(verdict: str) -> str:
-    if verdict in ("낙관", "과도한 낙관", "확인 필요", "다소 높음"):
+    if verdict in ("낙관", "과도한 낙관", "확인 필요", "다소 높음", "낙관 해석 주의", "일부 재확인"):
         return "🟠"
-    if verdict in ("현실적", "양호", "평균권"):
+    if verdict in ("현실적", "양호", "평균권", "큰 충돌 제한"):
         return "🟢"
     return "⚪"
 
@@ -1622,16 +1941,35 @@ def render_detail_block(title: str, body: str, impact: str, basis: str | None = 
         unsafe_allow_html=True,
     )
 
+
+def render_axis_brief(question: str, data: str, output: str) -> None:
+    """Small top strip that makes the decision flow visible in each tab."""
+    st.markdown(
+        f"""
+        <div style="display:grid;grid-template-columns:1.05fr 1.25fr 1fr;gap:10px;
+                    margin:4px 0 14px;padding:10px 12px;border:1px solid #E2E8F0;
+                    border-radius:7px;background:#FFFFFF">
+          <div><span style="font-size:11px;color:#64748B;font-weight:800">판단 질문</span><br>
+          <span style="font-size:13px;color:#17202A;line-height:1.45">{question}</span></div>
+          <div><span style="font-size:11px;color:#64748B;font-weight:800">대조 데이터</span><br>
+          <span style="font-size:13px;color:#17202A;line-height:1.45">{data}</span></div>
+          <div><span style="font-size:11px;color:#64748B;font-weight:800">결론</span><br>
+          <span style="font-size:13px;color:#17202A;line-height:1.45">{output}</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 dist = A["distribution"]
 tl = A["timeline"]
 rev = A["reverse"]
 if "need_eps" not in rev and rev.get("current_eps") is not None:
     rev["need_eps"] = round(float(rev["current_eps"]) * (1 + float(rev.get("need_growth", 0)) / 100))
 
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 
 with c1:
-    st.markdown("#### ① 분포 위치")
+    st.markdown("#### ① 목표가 편차")
     st.markdown(f"### {signal_icon(dist['position'])} {dist['position']}")
     st.caption(
         f"목표가 평균 {dist['mean']:,.0f}원 대비 {dist['vs_median_pct']:+.1f}%"
@@ -1639,33 +1977,51 @@ with c1:
 
 with c2:
     sig = "확인 필요" if tl["supply_gap"] else "양호"
-    st.markdown("#### ② 발행 후 변화")
+    st.markdown("#### ② 발행 이후 괴리")
     st.markdown(f"### {signal_icon(sig)} {sig}")
     st.caption(f"발행 {tl['elapsed']}일 경과 · 여력 {tl['soak_pct']}% 소진")
 
 with c3:
-    st.markdown("#### ③ 가정 검증")
+    st.markdown("#### ③ 필요 실적")
     st.markdown(f"### {signal_icon(rev['verdict'])} {rev['verdict']}")
     st.caption(
         f"필요 성장률 {rev['need_growth']:+.0f}% · "
         f"과거 중앙값 {rev['median_growth']:+.0f}%"
     )
 
+with c4:
+    st.markdown("#### ④ 본문 의견")
+    content_label = content_assessment.get("label", "본문 미반영")
+    st.markdown(f"### {signal_icon(content_label)} {content_label}")
+    if content_assessment.get("score") is None:
+        st.caption("PDF 본문을 읽으면 리포트별 의견 차이를 반영합니다")
+    else:
+        st.caption(
+            f"논점 {len(content_view.get('theme_rows', []))}개 · "
+            f"객관분석 -{content_assessment.get('penalty', 0)}점"
+        )
+
 st.divider()
 
 # ──────────────────────────────────────────────
 # 상세 탭
 # ──────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "① 분포 위치",
-    "② 발행 후 변화",
-    "③ 가정 검증",
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "① 목표가 편차",
+    "② 발행 이후 괴리",
+    "③ 필요 실적",
+    "④ 본문 의견 검증",
     "종합평가",
     "근거·출처",
 ])
 
 with tab1:
-    st.subheader("증권사 목표가 평균 대비 위치")
+    st.subheader("목표가가 얼마나 높은가")
+    render_axis_brief(
+        "이 리포트 목표가가 시장 평균이나 다른 증권사보다 유난히 높은가",
+        "증권사 목표가 평균, 업로드 리포트별 목표가·투자의견, 목표가 평균 대비 편차",
+        "목표가가 평균권인지, 공격적인지, 보수적인지 구분합니다.",
+    )
 
     cons = A.get("consensus") or {}
     col1, col2, col3 = st.columns(3)
@@ -1694,26 +2050,31 @@ with tab1:
             f"· 기준일 {cons.get('create_date','')}"
         )
     st.info(
-        "증권사별 개별 목표가는 리포트 PDF에 있어 원문 확인이 필요합니다. "
-        "여기서는 증권사 목표가 평균 대비 위치를 먼저 봅니다."
+        "업로드한 PDF에서 목표가와 투자의견을 읽어 비교합니다. "
+        "자동 인식이 안 된 리포트는 표 계산에서 제외하고, 왼쪽에서 직접 입력하면 다시 반영합니다."
     )
     render_report_batch_distribution(A)
 
 with tab2:
-    st.subheader("발행 후 주가 및 수급 변화")
+    st.subheader("발행 이후 현실과 얼마나 달라졌나")
+    render_axis_brief(
+        "리포트 발행 뒤 주가·수급·공시가 리포트 방향과 어긋났는가",
+        "리포트별 발행일 주가, 현재 주가, 발행 후 수익률, 지분공시, DART 공시",
+        "시간이 지나 전제가 낡았는지, 어떤 리포트가 현재 흐름과 가장 덜 어긋나는지 봅니다.",
+    )
 
     batch_tl = A.get("report_batch_timeline") or {}
     batch_rows = batch_tl.get("rows") or []
     batch_summary = batch_tl.get("summary") or {}
     if batch_rows:
-        st.markdown("#### 업로드 리포트별 발행 후 변화")
+        st.markdown("#### 업로드 리포트별 발행 이후 괴리")
         b1, b2, b3, b4 = st.columns(4)
         with b1:
             st.metric("평균 발행일 주가", _fmt_won(batch_summary.get("avg_price_at_pub")))
         with b2:
             st.metric("현재 주가", _fmt_won(co["current_price"]))
         with b3:
-            st.metric("평균 발행 후 변화", _fmt_pct(batch_summary.get("avg_realized")))
+            st.metric("평균 발행 후 수익률", _fmt_pct(batch_summary.get("avg_realized")))
         with b4:
             best_label = batch_summary.get("best_broker") or "계산 필요"
             best_score = batch_summary.get("best_score")
@@ -1793,7 +2154,12 @@ with tab2:
         st.info("발행 이후 신뢰도를 크게 흔드는 수급·공시 변화는 제한적으로 보입니다.")
 
 with tab3:
-    st.subheader("성장률 역산 검증")
+    st.subheader("목표가에 필요한 실적이 현실적인가")
+    render_axis_brief(
+        "목표가가 성립하려면 EPS가 얼마나 좋아져야 하는가",
+        "DART 분기 재무, 현재 EPS, 목표가 역산 EPS, 과거 EPS 성장률 평균·중앙값",
+        "목표가가 과거 실적 범위 안에서 설명되는지, 무리한 성장률을 요구하는지 판단합니다.",
+    )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -1835,10 +2201,68 @@ with tab3:
         st.metric("필요값", f"{rev['need_growth']:+.1f}%")
 
 with tab4:
-    st.subheader("종합평가")
+    st.subheader("리포트 본문 의견이 실제 데이터와 맞는가")
+    render_axis_brief(
+        "리포트 본문에서 좋게 본 부분이 실제 숫자로도 확인되는가",
+        "PDF 본문 문장, 리포트별 강조 논점, DART 재무, 발행 후 주가·수급·공시",
+        "공통으로 맞는 내용, 해석이 갈리는 부분, 낙관적으로 볼 수 있는 부분을 나눕니다.",
+    )
     render_detail_block(
         "해석",
-        "투자의견을 그대로 받아들이지 않고 DART 재무, 발행 후 변화, 목표가 평균, 목표가 가정을 함께 대조한 결과입니다.",
+        "목표가 숫자만 맞춰보면 리포트 안의 핵심 의견을 놓칠 수 있습니다. 그래서 PDF 본문에서 반복되는 논점을 뽑고, 증권사별 해석 차이와 실제 데이터의 확인 정도를 따로 봅니다.",
+        f"반영: {content_assessment.get('reason', '본문 의견 검증 미반영')}",
+        f"객관분석 -{content_assessment.get('penalty', 0)}점",
+    )
+
+    theme_rows = content_view.get("theme_rows", [])
+    claim_rows = content_view.get("claim_rows", [])
+    if not theme_rows:
+        st.info("업로드한 PDF 본문을 읽으면 리포트별 공통 의견과 차이가 이곳에 정리됩니다.")
+    else:
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("분석 논점", f"{len(theme_rows)}개")
+        with m2:
+            st.metric("의견 차이", f"{content_assessment.get('divergent_count', 0)}개")
+        with m3:
+            penalty = content_assessment.get("penalty", 0)
+            st.metric("신뢰도 반영", "차감 없음" if not penalty else f"-{penalty}점")
+        if content_view.get("summary"):
+            st.info(content_view["summary"])
+        display_rows = []
+        for row in theme_rows:
+            display_rows.append({
+                "논점": row.get("논점"),
+                "언급": row.get("언급 리포트"),
+                "리포트별 방향": row.get("리포트 간 차이"),
+                "실제 데이터 대조": row.get("FinSight 대조"),
+                "판단": row.get("판정"),
+            })
+        st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+        if claim_rows:
+            with st.expander("리포트별 본문 근거 보기"):
+                st.dataframe(pd.DataFrame(claim_rows), use_container_width=True, hide_index=True)
+
+with tab5:
+    col_title, col_btn = st.columns([0.85, 0.15])
+    with col_title:
+        st.subheader("종합평가")
+    with col_btn:
+        st.download_button(
+            "📥 HTML",
+            html_report.encode("utf-8"),
+            file_name=f"FinSight_{co['name']}_Report_Check.html",
+            mime="text/html",
+            use_container_width=True,
+        )
+    render_axis_brief(
+        "목표가와 투자의견을 그대로 받아들여도 되는가",
+        "목표가 편차, 발행 이후 괴리, 필요 실적, 본문 의견 검증, 객관분석 차감",
+        "신뢰도 점수와 리포트별 현실 부합도를 함께 정리합니다.",
+    )
+    render_detail_block(
+        "해석",
+        "투자의견을 그대로 받아들이지 않고 DART 재무, 발행 이후 괴리, 목표가 평균, 필요 실적, 리포트 본문 의견을 함께 대조한 결과입니다.",
         f"최종 {V['total']}점 · {V['grade']}등급",
         f"기초 {V.get('base_total', V['total'])}점 / 객관분석 -{V.get('alignment', {}).get('penalty', 0)}점",
     )
@@ -1848,13 +2272,9 @@ with tab4:
     if batch_conclusion:
         st.markdown("#### 리포트 간 비교 결론")
         st.info(batch_conclusion)
-    batch_rows = build_report_comparison_rows(
-        A.get("report_batch", []),
-        (A.get("consensus") or {}).get("price_target_mean"),
-    )
-    if batch_rows:
-        st.markdown("#### 업로드 리포트 비교")
-        st.dataframe(pd.DataFrame(batch_rows), use_container_width=True, hide_index=True)
+    if content_view.get("summary"):
+        st.markdown("#### 본문 의견 검증 결론")
+        st.info(content_view["summary"])
     alignment = V.get("alignment", {})
     if alignment:
         st.markdown("#### 신뢰도에 반영한 객관분석")
@@ -1866,35 +2286,27 @@ with tab4:
                 f"{factor.get('reason')}  \n"
                 f":gray[근거: {factor.get('evidence')}]"
             )
-    dl1, dl2 = st.columns(2)
-    with dl1:
-        st.download_button(
-            "HTML 다운로드",
-            html_report.encode("utf-8"),
-            file_name=f"FinSight_{co['name']}_Report_Check.html",
-            mime="text/html",
-            use_container_width=True,
-        )
-    with dl2:
-        if pdf_report:
-            st.download_button(
-                "PDF 다운로드",
-                pdf_report,
-                file_name=f"FinSight_{co['name']}_Report_Check.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-            )
 
-with tab5:
+with tab6:
     st.subheader("점수 산정 근거")
+    render_axis_brief(
+        "점수와 결론이 어떤 숫자와 출처에서 나왔는가",
+        "DART 재무·공시, KRX 주가·수급, 증권사 목표가 평균, 업로드 PDF, 뉴스·외부 정황",
+        "주장이 아니라 어떤 데이터가 어떤 점수에 연결됐는지 확인합니다.",
+    )
     render_detail_block(
         "판단 기준",
-        "이 탭은 결론을 뒷받침한 숫자와 출처를 그대로 남기는 감사표입니다. 목표가, 발행일, 현재가, 증권사 목표가 평균, DART 재무, 수급 변화가 각각 어떤 점수와 차감으로 연결됐는지 확인할 수 있습니다.",
+        "이 탭은 결론을 뒷받침한 숫자와 출처를 그대로 남기는 감사표입니다. 목표가, 발행일, 현재가, 증권사 목표가 평균, PDF 본문, DART 재무, 수급 변화가 각각 어떤 점수와 차감으로 연결됐는지 확인할 수 있습니다.",
         "주장이 아니라 확인된 팩트와 산식으로 신뢰도 점수를 만들었습니다.",
-        "분포 위치 30점 / 발행 후 변화 30점 / 가정 검증 40점 / FinSight 객관분석 추가 차감",
+        "목표가 편차 30점 / 발행 이후 괴리 30점 / 필요 실적 40점 / 본문 의견·객관분석 추가 차감",
     )
     formula = score_formula(A)
     st.markdown(f"**{formula['text']}**")
+
+    st.markdown("#### 배점 기준")
+    st.dataframe(pd.DataFrame(build_scoring_rulebook(A)), use_container_width=True, hide_index=True)
+
+    st.markdown("#### 점수 계산")
     st.dataframe(pd.DataFrame(build_score_audit(A)), use_container_width=True, hide_index=True)
 
     st.markdown("#### 객관분석·발행 후 업데이트")
@@ -1903,7 +2315,7 @@ with tab5:
     st.markdown("#### 원자료 연결")
     st.dataframe(pd.DataFrame(build_source_audit(A)), use_container_width=True, hide_index=True)
 
-    st.markdown("#### 데이터 소스 사용 이유")
+    st.markdown("#### 자료 흐름")
     st.dataframe(pd.DataFrame(build_data_source_logic(A)), use_container_width=True, hide_index=True)
 
     kpi_snapshot = build_kpi_snapshot(A)

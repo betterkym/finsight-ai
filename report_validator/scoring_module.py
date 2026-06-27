@@ -1,19 +1,19 @@
 """모듈4 — 리포트 신뢰도 점수화 + 평가 의견 생성.
 
-3축 검증 결과를 100점 만점으로 종합하고, '종목'이 아니라 '리포트'에 대한
+핵심 검증 결과를 100점 만점으로 종합하고, '종목'이 아니라 '리포트'에 대한
 평가 의견을 문장으로 만든다. 종목 추천(사세요/파세요)은 하지 않는다.
 오직 '이 리포트를 얼마나 믿어도 되는가'만 판정한다.
 
 가중치 설계 근거:
-  논리축 40 — 핵심 해자. 목표가가 선 가정의 현실성이 가장 본질적.
-  공간축 30 — 분포에서 혼자 튀는지(낙관 편향 신호).
-  시간축 30 — 발행 후 낡았는지(선반영·수급 괴리).
+  필요 실적 40 — 목표가가 요구하는 실적 현실성이 가장 본질적.
+  목표가 편차 30 — 평균에서 크게 벗어난 목표가인지 확인.
+  발행 이후 괴리 30 — 발행 후 전제가 낡았거나 수급과 어긋났는지 확인.
 """
 from __future__ import annotations
 
 
 def score_space(distribution: dict) -> dict:
-    """공간축 점수 (30점) — 분포 정합성.
+    """목표가 편차 점수 (30점).
 
     비교할 목표가 분포가 없으면(insufficient) 0점이 아니라 '미집계'로 처리한다.
     분포 데이터가 없다는 것이 리포트의 흠은 아니므로 점수를 깎지 않는다.
@@ -39,7 +39,7 @@ def score_space(distribution: dict) -> dict:
 
 
 def score_time(timeline: dict) -> dict:
-    """시간축 점수 (30점) — 시점 유효성."""
+    """발행 이후 괴리 점수 (30점)."""
     base = 30
     deductions = []
     if timeline["elapsed"] > 90:
@@ -63,7 +63,7 @@ def score_time(timeline: dict) -> dict:
 
 
 def score_logic(reverse: dict) -> dict:
-    """논리축 점수 (40점) — 가정 현실성. 핵심 해자."""
+    """필요 실적 점수 (40점)."""
     mult = reverse["multiple"] if reverse["multiple"] else 1
     verdict = reverse["verdict"]
     if verdict == "현실적":
@@ -99,7 +99,7 @@ def grade_of(total: int) -> tuple[str, str]:
 def build_report_verdict(
     distribution: dict, timeline: dict, reverse: dict, report: dict
 ) -> dict:
-    """3축을 종합해 리포트 신뢰도 점수 + 평가 의견을 생성한다.
+    """핵심 검증축을 종합해 리포트 신뢰도 점수 + 평가 의견을 생성한다.
 
     핵심: '종목'에 대한 의견이 아니라 '리포트'에 대한 평가다.
     """
@@ -107,7 +107,7 @@ def build_report_verdict(
     tm = score_time(timeline)
     lg = score_logic(reverse)
 
-    # 미집계 축(공간축 데이터 없음)은 제외하고, 집계된 축만으로 100점 환산.
+    # 미집계 항목(비교 데이터 없음)은 제외하고, 집계된 항목만으로 100점 환산.
     counted = [ax for ax in (sp, tm, lg) if not ax.get("uncounted")]
     raw = sum(ax["score"] for ax in counted if ax["score"] is not None)
     max_possible = sum(ax["max"] for ax in counted if not ax.get("uncounted"))
@@ -120,8 +120,8 @@ def build_report_verdict(
     weak_candidates = []
     if not sp.get("uncounted"):
         weak_candidates.append(("분포에서 혼자 튀는 점", sp["score"] / sp["max"]))
-    weak_candidates.append(("발행 후 시점이 낡은 점", tm["score"] / tm["max"]))
-    weak_candidates.append(("목표가 가정이 무리한 점", lg["score"] / lg["max"]))
+    weak_candidates.append(("리포트 발행 이후 현실과 벌어진 점", tm["score"] / tm["max"]))
+    weak_candidates.append(("목표가에 필요한 실적이 부담스러운 점", lg["score"] / lg["max"]))
     weakest = min(weak_candidates, key=lambda x: x[1])[0] if weak_candidates else "불명확한 점"
 
     broker = report.get("broker", "이 증권사")
@@ -129,14 +129,14 @@ def build_report_verdict(
 
     if total >= 60:
         headline = f"{broker}의 목표가 {target:,}원은 현재 데이터와 크게 충돌하지 않습니다."
-        guide = "위치·시점·가정에서 큰 차감 요인은 제한적입니다. 목표가를 참고할 수는 있지만, 리포트 결론이 확정됐다는 뜻은 아닙니다."
+        guide = "목표가 편차·발행 이후 괴리·필요 실적에서 큰 차감 요인은 제한적입니다. 목표가를 참고할 수는 있지만, 리포트 결론이 확정됐다는 뜻은 아닙니다."
     elif total >= 45:
         headline = f"{broker}의 목표가 {target:,}원은 주의해서 봐야 합니다."
         guide = f"특히 '{weakest}'이 신뢰도를 낮춥니다. 리포트의 결론보다 근거와 가정이 맞는지 보는 쪽이 안전합니다."
     else:
         headline = f"{broker}의 목표가 {target:,}원은 그대로 믿기 어렵습니다."
         guide = (
-            f"3축 검증에서 약점이 여러 개 드러났고, 특히 '{weakest}'이 두드러집니다. "
+            f"핵심 검증에서 약점이 여러 개 드러났고, 특히 '{weakest}'이 두드러집니다. "
             f"리포트의 목표가가 현재 확인된 데이터보다 낙관적일 가능성이 큽니다."
         )
 
@@ -147,9 +147,9 @@ def build_report_verdict(
         "stars": stars,
         "partial": partial,
         "axes": {
-            "space": {**sp, "title": "① 분포 정합성 (혼자 튀나?)"},
-            "time": {**tm, "title": "② 시점 유효성 (지금도 유효?)"},
-            "logic": {**lg, "title": "③ 가정 현실성 (숫자가 성립?)"},
+            "space": {**sp, "title": "① 목표가 편차"},
+            "time": {**tm, "title": "② 발행 이후 괴리"},
+            "logic": {**lg, "title": "③ 필요 실적"},
         },
         "headline": headline,
         "guide": guide,

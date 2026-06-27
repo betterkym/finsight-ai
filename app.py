@@ -74,7 +74,7 @@ with nav_col:
     st.markdown("</div>", unsafe_allow_html=True)
 st.markdown(
     "<div class='fs-lead'>증권사 리포트를 그대로 믿기 전에, DART 재무·공시와 KRX 주가·수급, "
-    "증권사 목표가 평균, 발행 이후 공시·뉴스·지분 변동을 한 번 더 대조합니다. "
+    "증권사 목표가 평균, 업로드 PDF 본문, 발행 이후 공시·뉴스·지분 변동을 한 번 더 대조합니다. "
     "목표가와 투자의견을 어느 정도 신뢰할 수 있는지 점수화하고 현재 주가와의 차이를 해석합니다.</div>",
     unsafe_allow_html=True,
 )
@@ -105,10 +105,10 @@ with col2:
         <div class="fs-card">
           <span class="fs-tag">Report Check</span>
           <h3>리포트 신뢰도 검증</h3>
-          <p>증권사 리포트의 목표가와 투자의견을 DART 재무·공시, KRX 주가·수급, 목표가 평균, 발행 이후 공시·뉴스로 다시 대조합니다.</p>
+          <p>증권사 리포트의 목표가, 투자의견, 본문 의견을 DART 재무·공시, KRX 주가·수급, 목표가 평균, 발행 이후 이슈로 다시 대조합니다.</p>
           <div class="fs-list">
           리포트 입력 → 목표가 평균 비교 → 발행 후 주가·수급 확인<br>
-          필요 EPS 성장률 역산 → 신뢰도 점수와 종합 해석 보고서
+          필요 EPS 성장률 역산 → 본문 의견 검증 → 종합 해석 보고서
           </div>
         </div>
         """,

@@ -1,8 +1,8 @@
-"""모듈1(분포)·모듈3(역산) — 공간축과 논리축 검증.
+"""목표가 편차와 필요 실적 검증.
 
 기존 diagnostics.py를 건드리지 않고 별도로 구현.
 diagnostics의 calculate_multiple_valuation/build_valuation_range는 그대로 쓰고,
-여기에 '목표가 역산 + 변동성 보정'(모듈3)과 '분포 위치'(모듈1)만 더한다.
+여기에 목표가 평균 대비 위치 계산과 EPS 역산·변동성 보정을 더한다.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ _ASSUMED_TARGET_CV = 0.12
 
 
 def locate_vs_consensus(target_price: float, consensus: dict) -> dict:
-    """검증 목표가가 시장 컨센서스 평균 대비 어디인지 판단(모듈1, 평균 기반).
+    """검증 목표가가 시장 컨센서스 평균 대비 어디인지 판단한다.
 
     네이버는 증권사별 목표가 리스트 대신 '컨센서스 평균'만 제공한다.
     개별 분포가 없으므로 평균 대비 괴리율을 표준편차 추정으로 z화한다.
@@ -76,7 +76,7 @@ def reverse_engineer_target(
     shares_outstanding: float,
     current_price: float,
 ) -> dict:
-    """목표가를 '필요 EPS 성장률'로 역산하고 과거 변동성으로 보정한다. (모듈3 코어)
+    """목표가를 '필요 EPS 성장률'로 역산하고 과거 변동성으로 보정한다.
 
     개인투자자는 목표가를 '결론'으로만 받는다. 이 함수는 그 목표가가
     성립하려면 회사가 얼마나 성장해야 하는지를 역산하고, 과거 실적과 대조한다.

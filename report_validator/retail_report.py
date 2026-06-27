@@ -1,4 +1,4 @@
-"""Downloadable retail-facing report for the 3-axis validator."""
+"""Downloadable retail-facing report for the report reliability validator."""
 from __future__ import annotations
 
 import datetime as dt
@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from report_validator.evidence_audit import (
+    build_scoring_rulebook,
     build_score_audit,
     build_source_audit,
     build_update_audit,
@@ -193,6 +194,10 @@ def build_retail_report_model(analysis: dict) -> dict:
     else:
         summary = f"{broker}의 목표가 {target:,.0f}원은 그대로 믿기 어렵습니다. {lead_title}이 충분히 반영되지 않은 것으로 보입니다."
 
+    content_assessment = analysis.get("report_content_assessment") or {}
+    if content_assessment.get("penalty"):
+        summary += f" PDF 본문 의견 검증에서는 {content_assessment.get('reason')} 때문에 신뢰도 {content_assessment.get('penalty')}점이 추가 차감됐습니다."
+
     return {
         "company": company,
         "report": report,
@@ -200,24 +205,25 @@ def build_retail_report_model(analysis: dict) -> dict:
         "summary": summary,
         "as_of": dt.date.today().isoformat(),
         "score_formula": score_formula(analysis),
+        "score_rulebook": build_scoring_rulebook(analysis),
         "score_audit": build_score_audit(analysis),
         "source_audit": build_source_audit(analysis),
         "update_audit": build_update_audit(analysis),
         "axis_rows": [
             {
-                "axis": "위치",
+                "axis": "목표가 편차",
                 "result": dist.get("position"),
                 "read": f"증권사 목표가 평균 {dist.get('mean', 0):,.0f}원 대비 {dist.get('vs_median_pct', 0):+.1f}%입니다.",
                 "score": verdict["axes"]["space"],
             },
             {
-                "axis": "시점",
+                "axis": "발행 이후 괴리",
                 "result": "수급 괴리" if timeline.get("supply_gap") else "큰 괴리 제한",
                 "read": f"발행 {timeline.get('elapsed')}일 경과, 여력 {timeline.get('soak_pct')}% 소진, 외국인 {timeline.get('foreign_net', 0):+,}억원입니다.",
                 "score": verdict["axes"]["time"],
             },
             {
-                "axis": "가정",
+                "axis": "필요 실적",
                 "result": reverse.get("verdict"),
                 "read": f"필요 성장률 {_f(reverse.get('need_growth'), '%')} vs 과거 중앙값 {_f(reverse.get('median_growth'), '%')}입니다.",
                 "score": verdict["axes"]["logic"],
@@ -226,6 +232,8 @@ def build_retail_report_model(analysis: dict) -> dict:
         "latest_reads": _latest_read(analysis.get("kpis")),
         "issue_reads": _issue_read(analysis),
         "price_reads": _price_gap_read(analysis),
+        "report_content": analysis.get("report_content") or {},
+        "report_content_assessment": content_assessment,
     }
 
 
@@ -266,6 +274,28 @@ def generate_retail_html_report(analysis: dict) -> str:
         "</tr>"
         for row in model["score_audit"]
     )
+    score_rulebook = "".join(
+        "<tr>"
+        f"<td>{_e(row['구분'])}</td>"
+        f"<td>{_e(row['배점'])}</td>"
+        f"<td>{_e(row['비중 설명'])}</td>"
+        f"<td>{_e(row['차감 기준'])}</td>"
+        f"<td>{_e(row['현재 적용'])}</td>"
+        "</tr>"
+        for row in model["score_rulebook"]
+    )
+    content_rows = "".join(
+        "<tr>"
+        f"<td>{_e(row.get('논점'))}</td>"
+        f"<td>{_e(row.get('언급 리포트'))}</td>"
+        f"<td>{_e(row.get('리포트 간 차이'))}</td>"
+        f"<td>{_e(row.get('FinSight 대조'))}</td>"
+        f"<td>{_e(row.get('판정'))}</td>"
+        "</tr>"
+        for row in (model.get("report_content") or {}).get("theme_rows", [])
+    )
+    if not content_rows:
+        content_rows = "<tr><td colspan='5'>PDF 본문을 읽지 못해 본문 의견 검증은 제외했습니다.</td></tr>"
     update_audit = "".join(
         "<tr>"
         f"<td>{_e(row['평가 구분'])}</td>"
@@ -322,26 +352,31 @@ def generate_retail_html_report(analysis: dict) -> str:
   <h2>1. 검증 결과</h2>
   <table><thead><tr><th>검증축</th><th>판정</th><th>해석</th><th>점수</th></tr></thead><tbody>{axis_rows}</tbody></table>
 
-  <h2>2. 점수 산정 근거</h2>
+  <h2>2. 본문 의견 검증</h2>
+  <p>{_e((model.get('report_content') or {}).get('summary') or (model.get('report_content_assessment') or {}).get('reason') or 'PDF 본문 의견 검증 결과가 없습니다.')}</p>
+  <table><thead><tr><th>논점</th><th>언급</th><th>리포트별 방향</th><th>실제 데이터 대조</th><th>판단</th></tr></thead><tbody>{content_rows}</tbody></table>
+
+  <h2>3. 점수 산정 근거</h2>
   <p>{_e(model['score_formula']['text'])}</p>
+  <table><thead><tr><th>구분</th><th>배점</th><th>비중 설명</th><th>차감 기준</th><th>현재 적용</th></tr></thead><tbody>{score_rulebook}</tbody></table>
   <table><thead><tr><th>항목</th><th>배점</th><th>점수</th><th>차감</th><th>정량 근거</th><th>판정 로직</th></tr></thead><tbody>{score_audit}</tbody></table>
 
-  <h2>3. 최신 실적 읽기</h2>
+  <h2>4. 최신 실적 읽기</h2>
   <ul>{latest}</ul>
 
-  <h2>4. 주가 괴리 해석</h2>
+  <h2>5. 주가 괴리 해석</h2>
   <ul>{price_reads}</ul>
 
-  <h2>5. 객관분석·발행 후 업데이트</h2>
+  <h2>6. 객관분석·발행 후 업데이트</h2>
   <table><thead><tr><th>구분</th><th>항목</th><th>판단</th><th>근거</th><th>점수 영향</th></tr></thead><tbody>{update_audit}</tbody></table>
 
-  <h2>6. 원자료 연결</h2>
+  <h2>7. 원자료 연결</h2>
   <table><thead><tr><th>자료</th><th>출처</th><th>확인값</th><th>점수 연결</th></tr></thead><tbody>{source_audit}</tbody></table>
 
-  <h2>7. 발행 후 확인할 이슈</h2>
+  <h2>8. 발행 후 확인할 이슈</h2>
   <ul>{issues}</ul>
 
-  <h2>8. 결론</h2>
+  <h2>9. 결론</h2>
   <p>{_e(verdict.get('headline'))}</p>
   <p>{_e(verdict.get('guide'))}</p>
 
@@ -404,15 +439,28 @@ def generate_retail_pdf_report(analysis: dict) -> bytes:
         write(row["read"], 10)
     pdf.ln(1)
 
-    write("2. 점수 산정 근거", 14, "B")
+    write("2. 본문 의견 검증", 14, "B")
+    content_assessment = model.get("report_content_assessment") or {}
+    content_summary = (model.get("report_content") or {}).get("summary") or content_assessment.get("reason") or "PDF 본문 의견 검증 결과가 없습니다."
+    write(content_summary, 10)
+    for row in (model.get("report_content") or {}).get("theme_rows", [])[:8]:
+        write(f"- {row.get('논점')} · {row.get('판정')} · {row.get('언급 리포트')}", 10, "B")
+        write(f"리포트별 방향: {row.get('리포트 간 차이')}", 9)
+        write(f"실제 데이터 대조: {row.get('FinSight 대조')}", 9)
+    pdf.ln(1)
+
+    write("3. 점수 산정 근거", 14, "B")
     write(model["score_formula"]["text"], 10)
+    for row in model["score_rulebook"]:
+        write(f"- {row['구분']} · {row['배점']} · {row['현재 적용']}", 10, "B")
+        write(f"차감 기준: {row['차감 기준']}", 9)
     for row in model["score_audit"]:
         write(f"- {row['항목']} · {row['점수']} · {row['차감']}", 10, "B")
         write(f"근거: {row['정량 근거']}", 9)
         write(f"로직: {row['판정 로직']}", 9)
     pdf.ln(1)
 
-    write("3. 최신 실적 읽기", 14, "B")
+    write("4. 최신 실적 읽기", 14, "B")
     for row in model["latest_reads"] or [{"title": "실적 해석", "verdict": "", "read": "재무 데이터가 부족해 최신 분기 해석을 제한합니다.", "evidence": ""}]:
         write(f"- {row['title']} · {row['verdict']}", 11, "B")
         write(row["read"], 10)
@@ -420,7 +468,7 @@ def generate_retail_pdf_report(analysis: dict) -> bytes:
             write(f"근거: {row['evidence']}", 9)
     pdf.ln(1)
 
-    write("4. 주가 괴리 해석", 14, "B")
+    write("5. 주가 괴리 해석", 14, "B")
     for row in model["price_reads"] or [{"title": "주가 괴리", "verdict": "", "read": "현재 연결된 주가·수급 데이터에서는 별도 괴리 원인이 강하게 잡히지 않습니다.", "evidence": ""}]:
         write(f"- {row['title']} · {row['verdict']}", 11, "B")
         write(row["read"], 10)
@@ -428,7 +476,7 @@ def generate_retail_pdf_report(analysis: dict) -> bytes:
             write(f"근거: {row['evidence']}", 9)
     pdf.ln(1)
 
-    write("5. 객관분석·발행 후 업데이트", 14, "B")
+    write("6. 객관분석·발행 후 업데이트", 14, "B")
     for row in model["update_audit"][:8]:
         write(f"- {row['평가 구분']} · {row['항목']} · {row['점수 영향']}", 10, "B")
         write(row["판단"], 9)
@@ -436,13 +484,13 @@ def generate_retail_pdf_report(analysis: dict) -> bytes:
             write(f"근거: {row['근거']}", 9)
     pdf.ln(1)
 
-    write("6. 원자료 연결", 14, "B")
+    write("7. 원자료 연결", 14, "B")
     for row in model["source_audit"]:
         write(f"- {row['자료']} · {row['출처']}", 10, "B")
         write(f"{row['확인값']} / {row['점수 연결']}", 9)
     pdf.ln(1)
 
-    write("7. 발행 후 확인할 이슈", 14, "B")
+    write("8. 발행 후 확인할 이슈", 14, "B")
     for row in model["issue_reads"] or [{"title": "발행 후 공시·뉴스", "verdict": "", "read": "현재 연결된 발행 후 공시·뉴스·지분 변동은 제한적입니다.", "evidence": ""}]:
         write(f"- {row['title']} · {row['verdict']}", 11, "B")
         write(row["read"], 10)
@@ -450,7 +498,7 @@ def generate_retail_pdf_report(analysis: dict) -> bytes:
             write(f"근거: {row['evidence']}", 9)
     pdf.ln(1)
 
-    write("8. 결론", 14, "B")
+    write("9. 결론", 14, "B")
     write(verdict.get("headline", ""), 11, "B")
     write(verdict.get("guide", ""), 10)
     pdf.ln(2)
