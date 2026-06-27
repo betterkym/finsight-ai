@@ -2116,18 +2116,25 @@ def render_product_header() -> None:
     title_col, mode_col = st.columns([5.0, 1.15])
     with title_col:
         st.markdown(
-            "<div style='display:flex;align-items:center;gap:11px;margin:2px 0 2px'>"
-            "<div style='width:36px;height:36px;border-radius:9px;"
+            "<style>"
+            ".fs-title-btn:hover { opacity: 0.7; cursor: pointer; }"
+            "</style>"
+            "<div class='fs-title-btn' style='display:flex;align-items:center;gap:11px;margin:2px 0 2px;transition:opacity 0.2s'>"
+            "<div style='width:44px;height:44px;border-radius:10px;"
             "background:linear-gradient(135deg,#1B2A4A 0%,#2E4A7A 100%);"
             "display:flex;align-items:center;justify-content:center;"
-            "color:#fff;font-weight:900;font-size:18px;letter-spacing:-1px;"
+            "color:#fff;font-weight:900;font-size:22px;letter-spacing:-1px;"
             "box-shadow:0 2px 6px rgba(27,42,74,0.25)'>F</div>"
             "<div>"
-            "<div style='font-size:23px;font-weight:850;color:#131A24;letter-spacing:-0.02em;line-height:1.1'>FinSight</div>"
-            "<div style='font-size:12.5px;font-weight:650;color:#6B7684;margin-top:1px'>리포트 신뢰도 검증</div>"
+            "<div style='font-size:32px;font-weight:850;color:#131A24;letter-spacing:-0.02em;line-height:1.1'>FinSight</div>"
+            "<div style='font-size:16px;font-weight:650;color:#6B7684;margin-top:2px'>리포트 신뢰도 검증</div>"
             "</div></div>",
             unsafe_allow_html=True,
         )
+        if st.button("🏠", key="home_reset", help="홈으로 돌아가기", use_container_width=False):
+            st.session_state.clear()
+            st.query_params.clear()
+            st.rerun()
     with mode_col:
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         if st.button("Analyst Mode", key="open_analyst_mode", width="stretch"):
