@@ -151,10 +151,24 @@ def diagnose_real_financials(company_name: str) -> list[dict]:
     def add(name: str, ok: bool, detail: str) -> None:
         steps.append({"단계": name, "상태": "✅ 정상" if ok else "❌ 실패", "내용": detail})
 
+    # ① Secrets에 키가 들어왔는지(원천) ② 코드가 읽는지(최종) 분리 진단
+    secret_keys = []
+    secret_has_dart = False
+    try:
+        secret_keys = list(st.secrets.keys())
+        secret_has_dart = bool(str(st.secrets.get("DART_API_KEY", "")).strip())
+    except Exception:
+        secret_keys = []
+    add("Secrets에 DART_API_KEY 존재", secret_has_dart,
+        f"st.secrets 키 목록: {', '.join(secret_keys) if secret_keys else '비어 있음'}"
+        + ("" if secret_has_dart
+           else " — Streamlit Cloud ▸ Manage app ▸ Settings ▸ Secrets에 DART_API_KEY를 저장하세요"))
+
     key_ok = bool(dc.DART_API_KEY)
-    add("DART_API_KEY 인식", key_ok,
+    add("코드가 키를 읽음(os.getenv)", key_ok,
         f"키 끝 4자리 …{dc.DART_API_KEY[-4:]}" if key_ok
-        else "키 없음 — Streamlit Cloud의 Settings ▸ Secrets에 DART_API_KEY를 넣어야 합니다")
+        else ("Secrets엔 있으나 코드가 못 읽음 — 앱 재부팅(Reboot) 필요"
+              if secret_has_dart else "키 자체가 없어 못 읽음"))
     if not key_ok:
         return steps
 
