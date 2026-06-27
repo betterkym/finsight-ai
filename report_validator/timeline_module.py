@@ -88,6 +88,8 @@ def build_post_publish_timeline(
 
     return {
         "pub_date": pub_date,
+        "price_at_pub": round(price_at_pub),
+        "target_price": round(target),
         "elapsed": elapsed,
         "months": round(elapsed / 30, 1),
         "orig_upside": round(orig_upside, 1),

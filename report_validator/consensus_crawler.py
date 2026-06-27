@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from urllib.parse import urljoin
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import requests
+from bs4 import BeautifulSoup
 
 from core import data_collector as dc
 
@@ -24,6 +26,7 @@ _HEADERS = {
     )
 }
 _NAVER_API = "https://m.stock.naver.com/api/stock/{code}/integration"
+_NAVER_RESEARCH = "https://finance.naver.com/research/company_list.naver"
 
 
 def _recomm_label(recomm_mean: float) -> str:
@@ -112,3 +115,76 @@ def search_company_and_consensus(company_name: str) -> dict:
             f"{consensus['price_target_mean']:,.0f}원 · {consensus['opinion_label']}"
         ),
     }
+
+
+def _normalize_naver_date(value: str) -> str:
+    """Convert Naver research dates like 26.05.18 to YYYY-MM-DD."""
+    raw = (value or "").strip()
+    parts = raw.split(".")
+    if len(parts) != 3:
+        return raw
+    yy, mm, dd = parts
+    try:
+        return f"20{int(yy):02d}-{int(mm):02d}-{int(dd):02d}"
+    except ValueError:
+        return raw
+
+
+def fetch_naver_research_reports(stock_code: str, *, pages: int = 2, limit: int = 20) -> list[dict]:
+    """Fetch latest Naver Finance company research rows for a stock code.
+
+    Naver exposes report lists as HTML, not as a stable documented API. We use this
+    only for metadata and PDF links; target prices still require report parsing or
+    manual confirmation.
+    """
+    if not stock_code:
+        return []
+    reports: list[dict] = []
+    seen: set[str] = set()
+    for page in range(1, pages + 1):
+        try:
+            resp = requests.get(
+                _NAVER_RESEARCH,
+                params={"searchType": "itemCode", "itemCode": stock_code, "page": page},
+                headers=_HEADERS,
+                timeout=8,
+            )
+            if resp.status_code != 200:
+                continue
+            soup = BeautifulSoup(resp.text, "html.parser")
+        except Exception:
+            continue
+
+        for tr in soup.select("table.type_1 tr"):
+            cols = [td.get_text(" ", strip=True) for td in tr.find_all("td")]
+            if len(cols) < 6:
+                continue
+            company, title, broker, _attach, date, views = cols[:6]
+            if not company or not title or title == "제목":
+                continue
+            links = tr.find_all("a")
+            read_url = None
+            pdf_url = None
+            for link in links:
+                href = link.get("href") or ""
+                if "company_read.naver" in href:
+                    read_url = urljoin("https://finance.naver.com/research/", href)
+                if href.lower().endswith(".pdf"):
+                    pdf_url = href
+            key = read_url or f"{stock_code}:{title}:{broker}:{date}"
+            if key in seen:
+                continue
+            seen.add(key)
+            reports.append({
+                "company": company,
+                "title": title,
+                "broker": broker,
+                "date": _normalize_naver_date(date),
+                "views": views,
+                "read_url": read_url,
+                "pdf_url": pdf_url,
+                "source": "Naver Finance Research",
+            })
+            if len(reports) >= limit:
+                return reports
+    return reports

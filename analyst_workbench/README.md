@@ -13,7 +13,7 @@ DART 분기 재무를 수집하고, 이상 탐지 → 원인 추적 → 동종�
 
 ```bash
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run analyst_workbench/app.py
 ```
 
 ---
@@ -150,7 +150,7 @@ KOSIS/KAMIS/Trading Economics/UN Comtrade는 fetch 구현이 아직 없어,
 | 파일 | 역할 |
 |---|---|
 | `app.py` | 일곱 탭 분석 워크플로우 |
-| `data_collector.py` | DART·시장·거시·뉴스 수집, peer 추천 |
+| `core/data_collector.py` | DART·시장·거시·뉴스 수집, peer 추천 |
 | `kpi_engine.py` | 분기 KPI와 증감률 계산 (공유) |
 | `diagnostics.py` | 멀티플 교차검증·민감도 (공유) |
 | `signal_engine.py` | 전수 이상 탐지, 내부 원인, peer·맥락 연결 |

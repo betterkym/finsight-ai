@@ -99,7 +99,6 @@ def _dart_get(endpoint: str, **params) -> dict:
 
 
 @lru_cache(maxsize=1)
-@lru_cache(maxsize=1)
 def _corp_codes() -> dict[str, dict[str, str]]:
     if not DART_API_KEY:
         return {}

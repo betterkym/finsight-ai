@@ -4,35 +4,36 @@
 
 | 앱 | 대상 | 무엇을 하나 | 실행 |
 |----|------|-------------|------|
-| **app_finsight.py** | 개인투자자 | 리포트 목표가를 3축으로 검증, 신뢰도 100점 | `streamlit run app_finsight.py` |
-| **app.py** | 애널리스트 | DART 재무 전수 분석, 7탭 워크벤치 | `streamlit run app.py` |
+| **app.py** | 첫 화면 | 애널리스트용과 개인투자자용을 버튼으로 선택 | `streamlit run app.py` |
+| **report_validator/app_finsight.py** | 개인투자자 | 증권사 리포트를 DART·KRX·목표가 평균·공시·뉴스로 재검증, 신뢰도 100점 | `streamlit run report_validator/app_finsight.py` |
+| **analyst_workbench/app.py** | 애널리스트 | DART 재무 전수 분석, 7탭 워크벤치 | `streamlit run analyst_workbench/app.py` |
 
 두 앱은 **같은 엔진**(`kpi_engine`, `diagnostics`, `mode_views`)을 공유한다.
-개인투자자용은 그 위에 쉬운 3축 출력층을 얹은 것이다.
+개인투자자용은 그 위에 리포트 신뢰도 검증 출력층을 얹은 것이다.
 
 ---
 
-## 1️⃣ app_finsight.py — 3축 리포트 검증 (개인투자자용)
+## 1️⃣ report_validator/app_finsight.py — 리포트 신뢰도 검증 (개인투자자용)
 
-**"이 리포트, 믿어도 되나?"를 한 화면에서 100점으로 평가한다.**
+**증권사 리포트의 목표가와 투자의견을 DART 재무·공시, KRX 주가·수급, 증권사 목표가 평균, 발행 이후 공시·뉴스·지분 변동으로 다시 대조해 신뢰도 점수와 종합 해석 보고서를 제공한다.**
 
 자세한 설명은 [report_validator/README.md](report_validator/README.md) 참고.
 
 ### 빠른 시작
 ```bash
-streamlit run app_finsight.py
+streamlit run report_validator/app_finsight.py
 ```
 
 ### 핵심
-- ① 공간축: 다른 증권사보다 튀나? (목표가 분포)
-- ② 시간축: 발행 후 상황 바뀌었나? (실적·수급 괴리)
-- ③ 논리축 ★: 목표가 숫자가 성립하나? (변동성 보정 역산)
+- 분포 위치: 리포트 목표가가 시장 평균 대비 얼마나 공격적인지 확인
+- 발행 후 변화: 발행 이후 주가·수급·공시·뉴스 변화가 전제를 바꿨는지 확인
+- 가정 검증: 목표가에 필요한 EPS 성장률을 역산해 과거 실적과 대조
 
 신뢰도 등급: **75+ A · 60+ B · 45+ C · 30+ D · 미만 E**
 
 ---
 
-## 2️⃣ app.py — DART 분석 워크벤치 (애널리스트용)
+## 2️⃣ analyst_workbench/app.py — DART 분석 워크벤치 (애널리스트용)
 
 **DART 분기 재무 → 이상 탐지 → 원인 추적 → DCF 검증 → HTML 리포트·Excel 생성.**
 
@@ -41,7 +42,19 @@ streamlit run app_finsight.py
 ### 빠른 시작
 ```bash
 pip install -r requirements.txt
+streamlit run analyst_workbench/app.py
+```
+
+첫 화면에서 두 버전을 비교하려면 루트에서 실행합니다.
+
+```bash
 streamlit run app.py
+```
+
+애널리스트 워크벤치만 바로 열려면 다음 경로를 사용합니다.
+
+```bash
+streamlit run analyst_workbench/app.py
 ```
 
 ### 7개 탭
@@ -59,30 +72,28 @@ streamlit run app.py
 
 ```
 finsight-ai/
-├── app_finsight.py          ← 개인투자자 3축 (메인)
-├── app.py                   ← 애널리스트 7탭 (메인)
+├── app.py                   ← 첫 화면
 │
 ├── report_validator/        ← 개인투자자용 (3축)
 │   ├── app_finsight.py
-│   ├── validator.py         (3개 모듈 + 점수 통합)
+│   ├── finsight_modules.py  (분포·역산)
+│   ├── timeline_module.py   (발행 후 변화)
+│   ├── scoring_module.py    (3축 점수 통합)
 │   ├── demo_data.py
 │   └── README.md            ← 자세한 설명
 │
 ├── analyst_workbench/       ← 애널리스트용 (7탭)
 │   ├── app.py
-│   ├── workflows.py         (분석 로직 통합)
-│   ├── reporting.py         (리포트 생성)
-│   ├── thesis_engine.py     (가설 엔진)
+│   ├── signal_engine.py     (이상 탐지·원인)
+│   ├── valuation_model.py   (Bottom-up 모델)
+│   ├── report_templates.py  (HTML 리포트)
+│   ├── report_generator.py  (Excel 생성)
 │   └── README.md            ← 자세한 설명
 │
 ├── core/                    ← 공유 엔진
 │   ├── kpi_engine.py
 │   ├── diagnostics.py
 │   ├── data_collector.py
-│   └── valuation_model.py
-│
-├── ui/                      ← UI 컴포넌트
-│   ├── ui_components.py
 │   └── mode_views.py
 │
 └── lib/                     ← 유틸
@@ -127,13 +138,13 @@ DART 키만 필수. 나머지는 없으면 해당 기능을 건너뜁니다.
 
 ✅ **판단은 사용자** — 도구는 맥락만 제공한다.
 
-증권사 리포트의 목표가를 **3축으로 자동 검증**하는 개인투자자용 도구입니다.
-"이 리포트, 믿어도 되나?"를 한 화면에서 100점으로 평가합니다.
+증권사 리포트의 목표가와 투자의견을 **DART 재무·공시, KRX 주가·수급, 증권사 목표가 평균, 발행 이후 공시·뉴스·지분 변동으로 재검증**하는 개인투자자용 도구입니다.
+최종 결과는 리포트 신뢰도 100점과 종합 해석 보고서로 제공합니다.
 
 ### 빠른 시작
 
 ```bash
-streamlit run app_finsight.py
+streamlit run report_validator/app_finsight.py
 ```
 
 API 키 없이 농심 데모 데이터로 즉시 작동합니다. (DART_API_KEY가 있으면 실데이터 자동 연결)
@@ -158,14 +169,12 @@ API 키 없이 농심 데모 데이터로 즉시 작동합니다. (DART_API_KEY�
 ### 파일 구성
 
 ```
-app_finsight.py          # 3축 메인 UI + 신뢰도 카드
-scoring_module.py        # 신뢰도 점수 + 평가 의견 (모듈4)
-finsight_modules.py      # 분포·역산 함수 (모듈1·3)
-timeline_module.py       # 시점 정합성·수급 (모듈2)
-demo_data.py             # 농심 데모 (폴백용, 지우지 말 것)
-docs/
-  ├─ finsight-logic.md            # 설계 근거 (PART 1-5)
-  └─ finsight-implementation.md  # 실행 안내
+report_validator/
+  app_finsight.py          # 3축 메인 UI + 신뢰도 카드
+  scoring_module.py        # 신뢰도 점수 + 평가 의견 (모듈4)
+  finsight_modules.py      # 분포·역산 함수 (모듈1·3)
+  timeline_module.py       # 시점 정합성·수급 (모듈2)
+  demo_data.py             # 농심 데모 (폴백용, 지우지 말 것)
 ```
 
 **기존 엔진 (그대로 보존)**: kpi_engine, diagnostics, mode_views
@@ -195,7 +204,7 @@ DART 실적·주가·수급은 자동 수집됩니다.
 - **추천금지**: "사세요/파세요"는 절대 말하지 않습니다. "신뢰도"만.
 - **판단은 투자자**: FinSight는 맥락만 제공합니다.
 
-📖 자세한 설계 논리는 [docs/finsight-logic.md](docs/finsight-logic.md) 참고
+📖 자세한 설계 논리는 [report_validator/README.md](report_validator/README.md)와 [files/problem_definition.md](files/problem_definition.md) 참고
 
 ---
 
@@ -282,7 +291,7 @@ Bottom-up으로 재구성하는 농심 DCF 레퍼런스 로직을 그대로 옮�
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run analyst_workbench/app.py
 ```
 
 `.env` 예시:
@@ -313,18 +322,19 @@ DART 키는 필수입니다. ECOS·뉴스 키가 없으면 가능한 분석은 �
 
 | 파일 | 역할 |
 |---|---|
-| `app.py` | 일곱 탭 분석 워크플로우 |
-| `data_collector.py` | DART·시장·거시·뉴스 수집과 peer 추천 |
-| `kpi_engine.py` | 분기 KPI와 증감률 계산 |
-| `signal_engine.py` | 전수 이상 탐지, 내부 원인, peer·맥락 연결 |
-| `business_focus.py` | 이상 신호를 DCF 가정으로 변환 |
-| `diagnostics.py` | driver-based DCF, 멀티플 교차검증, 민감도 계산 |
-| `excel_builder.mjs` | 수식 기반 12시트 Analyst Workbook 생성 |
-| `report_generator.py` | Streamlit 다운로드용 Excel 브리지 |
-| `report_templates.py` | 발간형 투자 리포트 HTML과 in-app 리포트 모델 생성 |
-| `valuation_model.py` | 매출·판관비·WACC Bottom-up Build |
-| `interpretation.py` | 이상신호·주가 괴리의 인과 해석과 확인 절차 |
-| `ui_components.py` | CSS·차트·발간 리포트·랜딩 등 화면 컴포넌트 |
+| `app.py` | 첫 화면 |
+| `analyst_workbench/app.py` | 일곱 탭 분석 워크플로우 |
+| `core/data_collector.py` | DART·시장·거시·뉴스 수집과 peer 추천 |
+| `core/kpi_engine.py` | 분기 KPI와 증감률 계산 |
+| `analyst_workbench/signal_engine.py` | 전수 이상 탐지, 내부 원인, peer·맥락 연결 |
+| `analyst_workbench/business_focus.py` | 이상 신호를 DCF 가정으로 변환 |
+| `core/diagnostics.py` | driver-based DCF, 멀티플 교차검증, 민감도 계산 |
+| `analyst_workbench/excel_builder.mjs` | 수식 기반 12시트 Analyst Workbook 생성 |
+| `analyst_workbench/report_generator.py` | Streamlit 다운로드용 Excel 브리지 |
+| `analyst_workbench/report_templates.py` | 발간형 투자 리포트 HTML과 in-app 리포트 모델 생성 |
+| `analyst_workbench/valuation_model.py` | 매출·판관비·WACC Bottom-up Build |
+| `analyst_workbench/interpretation.py` | 이상신호·주가 괴리의 인과 해석과 확인 절차 |
+| `analyst_workbench/ui_components.py` | CSS·차트·발간 리포트·랜딩 등 화면 컴포넌트 |
 
 ## 한계
 

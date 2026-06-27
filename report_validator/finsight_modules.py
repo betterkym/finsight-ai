@@ -86,7 +86,10 @@ def reverse_engineer_target(
     annual = annualize_quarters(kpis)
     if annual.empty or "net_income" not in annual:
         raise ValueError("역산에 필요한 연간 순이익 데이터가 없습니다.")
-    eps_series = (annual["net_income"] / float(shares_outstanding)).dropna().tolist()
+    eps_frame = annual[["year", "net_income"]].copy()
+    eps_frame["eps"] = eps_frame["net_income"] / float(shares_outstanding)
+    eps_frame = eps_frame.dropna(subset=["eps"])
+    eps_series = eps_frame["eps"].tolist()
     if len(eps_series) < 3:
         raise ValueError("역산에는 최소 3개 완전연도 EPS가 필요합니다.")
 
@@ -99,6 +102,12 @@ def reverse_engineer_target(
 
     growths = [
         (eps_series[i] / eps_series[i - 1] - 1) * 100
+        for i in range(1, len(eps_series))
+        if eps_series[i - 1] > 0
+    ]
+    years = eps_frame["year"].astype(int).tolist()
+    growth_labels = [
+        f"{years[i - 1]}→{years[i]}"
         for i in range(1, len(eps_series))
         if eps_series[i - 1] > 0
     ]
@@ -125,6 +134,7 @@ def reverse_engineer_target(
         "target_price": target_price,
         "current_price": current_price,
         "current_eps": round(current_eps),
+        "need_eps": round(need_eps),
         "current_per": round(current_per, 1),
         "need_growth": round(need_growth, 1),
         "avg_growth": round(avg, 1),
@@ -135,6 +145,7 @@ def reverse_engineer_target(
         "multiple": round(need_growth / reference, 1) if reference else None,
         "verdict": verdict,
         "growth_history": [round(g, 1) for g in growths],
+        "growth_labels": growth_labels,
     }
 
 

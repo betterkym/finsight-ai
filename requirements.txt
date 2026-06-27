@@ -7,3 +7,5 @@ FinanceDataReader>=0.9.50
 pykrx>=1.0.48
 lxml>=5.0.0
 plotly>=5.20.0
+beautifulsoup4>=4.12.0
+pypdf>=4.0.0

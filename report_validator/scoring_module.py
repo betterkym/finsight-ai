@@ -28,7 +28,7 @@ def score_space(distribution: dict) -> dict:
     z = abs(distribution["z"])
     top = distribution["top_pct"]
     if z <= 0.5:
-        base, note = 30, "컨센서스 평균권 — 혼자 튀지 않음"
+        base, note = 30, "증권사 목표가 평균권 — 혼자 튀지 않음"
     elif z <= 1.0:
         base, note = 22, "평균에서 다소 벗어남"
     elif z <= 1.5:
@@ -128,16 +128,16 @@ def build_report_verdict(
     target = report.get("target_price", 0)
 
     if total >= 60:
-        headline = f"{broker}의 목표가 {target:,}원은 비교적 근거가 탄탄합니다."
-        guide = "3축 모두 큰 무리가 없습니다. 다만 투자 판단은 본인의 기준으로 하세요."
+        headline = f"{broker}의 목표가 {target:,}원은 현재 데이터와 크게 충돌하지 않습니다."
+        guide = "위치·시점·가정에서 큰 차감 요인은 제한적입니다. 목표가를 참고할 수는 있지만, 리포트 결론이 확정됐다는 뜻은 아닙니다."
     elif total >= 45:
         headline = f"{broker}의 목표가 {target:,}원은 주의해서 봐야 합니다."
-        guide = f"특히 '{weakest}'이 약점입니다. 이 리포트만 보고 판단하지 마세요."
+        guide = f"특히 '{weakest}'이 신뢰도를 낮춥니다. 리포트의 결론보다 근거와 가정이 맞는지 보는 쪽이 안전합니다."
     else:
         headline = f"{broker}의 목표가 {target:,}원은 그대로 믿기 어렵습니다."
         guide = (
             f"3축 검증에서 약점이 여러 개 드러났고, 특히 '{weakest}'이 두드러집니다. "
-            f"낙관 편향 가능성이 높으니 다른 근거를 더 확인하세요."
+            f"리포트의 목표가가 현재 확인된 데이터보다 낙관적일 가능성이 큽니다."
         )
 
     return {

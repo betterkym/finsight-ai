@@ -370,7 +370,11 @@ def interpret_price_action(
     if surprises:
         med = float(np.median(surprises))
         if price_weak and med > 0:
-            exp_read = f"컨센서스를 {med:+.1f}% 상회하고도 주가가 약하면, 호실적이 이미 가격에 반영됐거나 다음 분기 지속성에 대한 신뢰가 낮은 기대치 조정 구간입니다"
+            exp_read = (
+                f"영업이익이 컨센서스를 {med:+.1f}% 상회했는데도 주가가 약합니다. "
+                "시장은 이번 호실적 자체보다 그 이후에도 같은 속도로 좋아질 수 있는지를 더 의심하고 있습니다. "
+                "그래서 목표가와 현재가의 차이는 '좋은 실적을 몰라서'가 아니라, 이미 반영된 기대를 다시 낮추는 과정으로 보는 쪽이 맞습니다."
+            )
             exp_weight = "High"
         else:
             exp_read = f"실적이 컨센서스 대비 {med:+.1f}% 수준으로 기대 괴리는 제한적입니다"
@@ -394,7 +398,8 @@ def interpret_price_action(
         flow_read = (
             f"{row.get('reporter') or '주요주주'}의 보유비율이 {rc:+.2f}%p"
             f"{f' ({shr:+,.0f}주)' if shr is not None else ''} 줄었습니다. "
-            f"보유목적이 단순투자라면 지배구조 이슈가 아니라 단기 수급 부담으로 읽어야 합니다."
+            "이 정도의 지분 감소는 회사의 실적 방향과 별개로 단기 매물 부담을 만듭니다. "
+            "따라서 리포트 목표가가 높아도, 이 매도 압력이 해소되기 전에는 주가가 목표가 쪽으로 바로 붙는다고 보기 어렵습니다."
         )
         attribution.append({
             "driver": "수급(기관/대주주)", "weight": "High",
@@ -432,20 +437,31 @@ def interpret_price_action(
     high_nonfundamental = [a for a in attribution if a["driver"] != "실적(펀더멘털)" and a["weight"] == "High"]
     if price_weak and operating_up >= operating_down and high_nonfundamental:
         verdict = "실적 때문만은 아닙니다 — 수급·기대치 조정이 더 크게 작용한 구간"
+        drivers = ", ".join(a["driver"] for a in high_nonfundamental)
         thesis = (
-            "최근 분기 실적은 무너지지 않았는데 주가가 약합니다. 약세를 끌어내린 축은 펀더멘털이 아니라 "
-            f"{', '.join(a['driver'] for a in high_nonfundamental)}입니다. "
-            "주가가 다시 오르려면 실적 자체보다 다음 분기 해외 성장과 수급 회복이 숫자로 확인돼야 합니다."
+            "최근 분기 실적은 무너지지 않았습니다. 그런데도 주가가 약한 이유는 시장이 실적 숫자보다 "
+            f"{drivers}를 더 크게 반영하고 있기 때문입니다. "
+            "이 경우 현재가와 목표가의 차이는 단순한 저평가라기보다, 이미 반영됐던 기대가 낮아지고 매도 물량이 가격을 누르는 구간으로 해석합니다. "
+            "따라서 리포트의 목표가가 논리적으로 가능하더라도, 기대치 조정과 수급 부담이 풀리기 전까지 그 목표가가 곧바로 주가 상승으로 이어진다고 보기는 어렵습니다."
         )
     elif price_weak and operating_down > operating_up:
         verdict = "주가 약세를 수급만으로 설명하기 어려운 펀더멘털 경계 구간"
-        thesis = "실적·마진·현금흐름 중 훼손된 축이 먼저 회복돼야 합니다. 수급은 부차적입니다."
+        thesis = (
+            "주가 약세의 중심은 수급보다 실적·마진·현금흐름의 훼손입니다. "
+            "이 경우 목표가와 현재가의 차이는 시장의 과민반응으로 보기 어렵고, 리포트가 전제한 이익 회복 속도를 낮춰 보는 편이 맞습니다."
+        )
     elif not price_weak and operating_up >= operating_down:
         verdict = "실적과 주가 방향이 대체로 일치하는 구간"
-        thesis = "다음 판단은 개선 속도의 지속성과 밸류에이션 부담입니다."
+        thesis = (
+            "실적 개선과 주가 방향이 크게 어긋나지 않습니다. "
+            "현재 리포트의 목표가는 주가 흐름과 정면 충돌하지 않지만, 추가 상승 여력은 앞으로의 개선 속도와 밸류에이션 부담에 달려 있습니다."
+        )
     else:
         verdict = "신호가 혼재된 확인 구간"
-        thesis = "단일 원인으로 결론내리지 않고 다음 공시를 기다리는 것이 합리적입니다."
+        thesis = (
+            "실적, 수급, 기대치가 한 방향으로 모이지 않습니다. "
+            "이 상태에서는 리포트 목표가를 그대로 받아들이기보다, 현재 확인된 근거만큼만 신뢰도를 부여하는 편이 맞습니다."
+        )
 
     # Numeric framing for the price path (mirrors the blog's "442,500 → 37만원" panel).
     price_frame = {
