@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from kpi_engine import annualize_quarters
+from core.kpi_engine import annualize_quarters
 
 
 def _range(center: float, spread: float, floor: float | None = None) -> tuple[float, float]:

@@ -1,6 +1,10 @@
 """FinSight analyst workbench: filing-first diagnostics, peer evidence and DCF linkage."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from html import escape
 
 import pandas as pd
@@ -15,17 +19,17 @@ from data_collector import (
     get_quarterly_financials, get_recent_disclosures, get_sga_breakdown, recommend_peers,
     suggest_companies,
 )
-from diagnostics import (
+from core.diagnostics import (
     build_terminal_value_guidance, build_valuation_range, calculate_dcf,
     calculate_multiple_valuation, run_dcf_sensitivity,
 )
 from interpretation import interpret_price_action, interpret_signal
 from investment_thesis import build_investment_thesis
-from kpi_engine import calculate_quarterly_kpis
-from mode_views import build_peer_benchmark, build_peer_comparison, build_tracker_table
+from core.kpi_engine import calculate_quarterly_kpis
+from core.mode_views import build_peer_benchmark, build_peer_comparison, build_tracker_table
 from report_generator import export_excel
 from report_templates import generate_analysis_html_report
-from research_reference import get_research_reference
+from lib.research_reference import get_research_reference
 from signal_engine import attach_context, attach_peer_evidence, build_margin_bridge, scan_financial_health
 from ui_components import (
     financial_trend_chart, inject_css, peer_benchmark_chart, price_path_chart,
@@ -33,7 +37,7 @@ from ui_components import (
     render_landing, render_process_steps, render_quality, render_tab_intro,
     render_tracker_cards, valuation_range_band,
 )
-from validation_agenda import build_data_quality_report, has_blocking_gaps
+from lib.validation_agenda import build_data_quality_report, has_blocking_gaps
 from valuation_model import build_opm_path, build_structured_model
 
 st.set_page_config(page_title="FinSight | Filing Analysis Workbench", page_icon="▦", layout="wide")

@@ -1,8 +1,203 @@
-# FinSight — DART Filing Analysis Workbench
+# FinSight
 
-기업명 하나로 DART 분기 재무를 수집하고, 핵심 계정 전수 이상 탐지 → DART 내부 원인 추적 → 동종기업 검증 → 관련 공시·뉴스 정황 → DCF 가정 연결 → 발간형 HTML 리포트와 수식형 Analyst Workbook까지 생성하는 Streamlit 분석 도구입니다.
+증권사 리포트와 DART 재무를 분석하는 도구. **두 개의 앱**으로 구성된다.
 
-> 원칙: 근거가 없으면 원인을 확정하지 않습니다. 웹 화면은 판단 순서를 안내하고, HTML 리포트와 Excel은 검증 가능한 계산식·출처·확인 포인트를 남깁니다.
+| 앱 | 대상 | 무엇을 하나 | 실행 |
+|----|------|-------------|------|
+| **app_finsight.py** | 개인투자자 | 리포트 목표가를 3축으로 검증, 신뢰도 100점 | `streamlit run app_finsight.py` |
+| **app.py** | 애널리스트 | DART 재무 전수 분석, 7탭 워크벤치 | `streamlit run app.py` |
+
+두 앱은 **같은 엔진**(`kpi_engine`, `diagnostics`, `mode_views`)을 공유한다.
+개인투자자용은 그 위에 쉬운 3축 출력층을 얹은 것이다.
+
+---
+
+## 1️⃣ app_finsight.py — 3축 리포트 검증 (개인투자자용)
+
+**"이 리포트, 믿어도 되나?"를 한 화면에서 100점으로 평가한다.**
+
+자세한 설명은 [report_validator/README.md](report_validator/README.md) 참고.
+
+### 빠른 시작
+```bash
+streamlit run app_finsight.py
+```
+
+### 핵심
+- ① 공간축: 다른 증권사보다 튀나? (목표가 분포)
+- ② 시간축: 발행 후 상황 바뀌었나? (실적·수급 괴리)
+- ③ 논리축 ★: 목표가 숫자가 성립하나? (변동성 보정 역산)
+
+신뢰도 등급: **75+ A · 60+ B · 45+ C · 30+ D · 미만 E**
+
+---
+
+## 2️⃣ app.py — DART 분석 워크벤치 (애널리스트용)
+
+**DART 분기 재무 → 이상 탐지 → 원인 추적 → DCF 검증 → HTML 리포트·Excel 생성.**
+
+자세한 설명은 [analyst_workbench/README.md](analyst_workbench/README.md) 참고.
+
+### 빠른 시작
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+### 7개 탭
+1. 리포트 — 발간형 투자 리포트
+2. 투자판단 — 실적·기대·수급·촉매 + 확인 포인트
+3. 실적 트래커 — 분기 KPI·추세
+4. 이상 탐지 — 13개 지표 전수 판정 + 내부 원인
+5. 동종기업 — peer 중앙값 비교
+6. 가치평가 — DCF·PER·EV/EBITDA 교차검증
+7. 근거·출처 — 데이터 커버리지·품질
+
+---
+
+## 📁 폴더 구조
+
+```
+finsight-ai/
+├── app_finsight.py          ← 개인투자자 3축 (메인)
+├── app.py                   ← 애널리스트 7탭 (메인)
+│
+├── report_validator/        ← 개인투자자용 (3축)
+│   ├── app_finsight.py
+│   ├── validator.py         (3개 모듈 + 점수 통합)
+│   ├── demo_data.py
+│   └── README.md            ← 자세한 설명
+│
+├── analyst_workbench/       ← 애널리스트용 (7탭)
+│   ├── app.py
+│   ├── workflows.py         (분석 로직 통합)
+│   ├── reporting.py         (리포트 생성)
+│   ├── thesis_engine.py     (가설 엔진)
+│   └── README.md            ← 자세한 설명
+│
+├── core/                    ← 공유 엔진
+│   ├── kpi_engine.py
+│   ├── diagnostics.py
+│   ├── data_collector.py
+│   └── valuation_model.py
+│
+├── ui/                      ← UI 컴포넌트
+│   ├── ui_components.py
+│   └── mode_views.py
+│
+└── lib/                     ← 유틸
+    ├── research_reference.py
+    └── validation_agenda.py
+```
+
+---
+
+## 🔧 설치
+
+```bash
+pip install -r requirements.txt
+```
+
+### .env (선택)
+```dotenv
+DART_API_KEY=발급키          # 필수
+ECOS_API_KEY=발급키          # 권장
+NAVER_CLIENT_ID=값           # 권장
+NAVER_CLIENT_SECRET=값
+KRX_ID=계정 / KRX_PW=비번    # 수급
+FRED_API_KEY=발급키          # 환율
+```
+
+DART 키만 필수. 나머지는 없으면 해당 기능을 건너뜁니다.
+
+---
+
+## 📖 더 알아보기
+
+- [개인투자자용 3축 검증](report_validator/README.md)
+- [애널리스트용 7탭 분석](analyst_workbench/README.md)
+
+---
+
+## 원칙
+
+✅ **사실만** — 의견을 새로 만들지 않는다.
+
+✅ **추천 금지** — "사세요/파세요"는 말하지 않는다.
+
+✅ **판단은 사용자** — 도구는 맥락만 제공한다.
+
+증권사 리포트의 목표가를 **3축으로 자동 검증**하는 개인투자자용 도구입니다.
+"이 리포트, 믿어도 되나?"를 한 화면에서 100점으로 평가합니다.
+
+### 빠른 시작
+
+```bash
+streamlit run app_finsight.py
+```
+
+API 키 없이 농심 데모 데이터로 즉시 작동합니다. (DART_API_KEY가 있으면 실데이터 자동 연결)
+
+### 3축 검증
+
+| 축 | 질문 | 데이터 | 점수 |
+|----|------|--------|------|
+| **① 공간축** | 이 목표가, 다른 증권사보다 튀나? | 목표가 분포 (증권사 비교) | 30점 |
+| **② 시간축** | 발행 후 상황 바뀌었나? | 실적·수급·주가 (시계열) | 30점 |
+| **③ 논리축** ★ | 이 목표가 숫자가 성립하나? | 과거 EPS vs 필요 성장률 | 40점 |
+
+**신뢰도 등급**: 75+ A · 60+ B · 45+ C · 30+ D · 미만 E
+
+### 핵심 차별점
+
+- **변동성 보정 (모듈3)**: 단순 평균 대신 중앙값 사용. 기저효과(한 해 +119%)로 오염된 평균을 걸러냅니다.
+  예: 농심은 평균 성장 +36%지만, 실제 중앙값은 +5%. → "낙관" 판정
+- **역산 계산**: 목표가를 "필요 EPS 성장률"로 역산해 과거 실적과 대조합니다.
+- **수급 괴리**: "신호"가 아니라 "리포트 의견 vs 시장 행동의 괴리"만 제시합니다.
+
+### 파일 구성
+
+```
+app_finsight.py          # 3축 메인 UI + 신뢰도 카드
+scoring_module.py        # 신뢰도 점수 + 평가 의견 (모듈4)
+finsight_modules.py      # 분포·역산 함수 (모듈1·3)
+timeline_module.py       # 시점 정합성·수급 (모듈2)
+demo_data.py             # 농심 데모 (폴백용, 지우지 말 것)
+docs/
+  ├─ finsight-logic.md            # 설계 근거 (PART 1-5)
+  └─ finsight-implementation.md  # 실행 안내
+```
+
+**기존 엔진 (그대로 보존)**: kpi_engine, diagnostics, mode_views
+
+### 사용자 입력
+
+사이드바에서:
+- **종목명/코드** (필수) → DART 자동 수집
+- **리포트 정보** (필수) → 증권사, 발행일, 목표가, 의견
+
+DART 실적·주가·수급은 자동 수집됩니다.
+
+### 검증 기준 (농심)
+
+```
+신뢰도: 37/100 (D등급)
+① 공간축: 14/30 — 8개 중 상위 12%
+② 시간축: 17/30 — 발행 36일, 외국인 -180억 순매도
+③ 논리축: 6/40 — 필요 +32% vs 보통 해 +5%
+
+→ "한화투자증권 목표가 550,000원은 그대로 믿기 어렵습니다"
+```
+
+### 핵심 원칙
+
+- **사실만**: 의견을 새로 만들지 않습니다.
+- **추천금지**: "사세요/파세요"는 절대 말하지 않습니다. "신뢰도"만.
+- **판단은 투자자**: FinSight는 맥락만 제공합니다.
+
+📖 자세한 설계 논리는 [docs/finsight-logic.md](docs/finsight-logic.md) 참고
+
+---
 
 ## 분석 순서
 
