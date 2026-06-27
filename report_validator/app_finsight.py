@@ -644,6 +644,141 @@ REPORT_THEME_RULES = [
 
 POSITIVE_WORDS = ["성장", "개선", "확대", "회복", "상향", "증가", "호조", "수혜", "기대", "견조", "긍정", "리레이팅"]
 NEGATIVE_WORDS = ["부담", "둔화", "하락", "악화", "감소", "리스크", "우려", "비용", "적자", "부진", "압박", "불확실"]
+OVERSEAS_SIGNAL_WORDS = [
+    "해외", "수출", "글로벌", "미국", "중국", "일본", "유럽", "북미", "동남아",
+    "아시아", "태국", "베트남", "인도네시아", "싱가포르", "대만", "홍콩",
+    "면세", "현지", "법인", "FDA", "CE", "인허가", "품목허가", "허가", "승인",
+]
+OVERSEAS_CONCRETE_WORDS = [
+    "계약", "공급", "수주", "MOU", "협약", "판매", "유통", "출시", "입점",
+    "매장", "법인", "자회사", "공장", "투자", "인수", "취득", "승인", "허가",
+    "인허가", "품목허가", "수출액", "해외매출", "매출", "실적", "선적",
+]
+EXPECTATION_ONLY_WORDS = [
+    "전망", "기대", "목표가", "상향", "관심", "수혜", "모멘텀", "가능성",
+    "주목", "리레이팅", "증권", "리포트", "분석", "추천",
+]
+
+
+def _plain_context_text(item: dict) -> str:
+    parts = []
+    for key in ("title", "detail", "summary", "description", "reason", "report_nm", "corp_name"):
+        value = item.get(key)
+        if value is not None:
+            parts.append(str(value))
+    text = re.sub(r"<[^>]+>", " ", " ".join(parts))
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _context_title(item: dict, limit: int = 42) -> str:
+    title = str(item.get("title") or item.get("detail") or item.get("report_nm") or "자료").strip()
+    title = html.unescape(re.sub(r"<[^>]+>", " ", title))
+    title = re.sub(r"\s+", " ", title).strip()
+    if len(title) > limit:
+        return title[: limit - 2].rstrip() + ".."
+    return title
+
+
+def _has_overseas_signal(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(word.lower() in lowered for word in OVERSEAS_SIGNAL_WORDS)
+
+
+def _is_expectation_only_context(text: str) -> bool:
+    lowered = str(text or "").lower()
+    has_expectation = any(word.lower() in lowered for word in EXPECTATION_ONLY_WORDS)
+    has_concrete = any(word.lower() in lowered for word in OVERSEAS_CONCRETE_WORDS)
+    return has_expectation and not has_concrete
+
+
+def _overseas_topic_label(text: str) -> str:
+    lowered = str(text or "").lower()
+    topics = []
+    if any(word.lower() in lowered for word in ("계약", "공급", "수주", "MOU", "협약")):
+        topics.append("공급·계약")
+    if any(word.lower() in lowered for word in ("판매", "유통", "출시", "입점", "매장", "면세")):
+        topics.append("해외 판매망")
+    if any(word.lower() in lowered for word in ("허가", "승인", "FDA", "CE", "인허가", "품목허가")):
+        topics.append("인허가")
+    if any(word.lower() in lowered for word in ("법인", "자회사", "공장", "투자", "인수", "취득")):
+        topics.append("해외 거점·투자")
+    if any(word.lower() in lowered for word in ("수출액", "해외매출", "매출", "실적", "선적", "수출")):
+        topics.append("수출·매출")
+    return " · ".join(topics[:2]) if topics else "해외 성장 단서"
+
+
+def _build_overseas_context_brief(context: dict) -> dict:
+    disclosures = (context or {}).get("disclosures", []) or []
+    news = (context or {}).get("news", []) or []
+    total_count = len(disclosures) + len(news)
+    candidates: list[dict] = []
+
+    for source, rows in (("공시", disclosures), ("뉴스", news)):
+        for item in rows:
+            text = _plain_context_text(item)
+            if not text or not _has_overseas_signal(text):
+                continue
+            candidates.append({
+                "source": source,
+                "title": _context_title(item),
+                "topic": _overseas_topic_label(text),
+                "expectation_only": _is_expectation_only_context(text),
+            })
+
+    concrete = [item for item in candidates if not item["expectation_only"]]
+    expectation = [item for item in candidates if item["expectation_only"]]
+
+    if not candidates:
+        if total_count:
+            return {
+                "signal_count": 0,
+                "concrete_count": 0,
+                "brief": (
+                    f"발행 이후 공시 {len(disclosures)}건·뉴스 {len(news)}건은 확인되지만, "
+                    "제목과 요약 기준으로 해외 매출 증가를 직접 보강하는 단서는 뚜렷하지 않습니다. "
+                    "따라서 이 자료들은 해외 성장의 숫자 근거라기보다 기대감이 얼마나 남아 있는지 보는 보조 자료로만 반영합니다."
+                ),
+            }
+        return {
+            "signal_count": 0,
+            "concrete_count": 0,
+            "brief": (
+                "발행 이후 새 공시나 뉴스도 아직 잡히지 않아, "
+                "리포트의 해외 성장 주장은 현재 숫자로는 확인이 부족합니다."
+            ),
+        }
+
+    top_items = (concrete or candidates)[:3]
+    topics = []
+    for item in top_items:
+        if item["topic"] not in topics:
+            topics.append(item["topic"])
+    examples = "; ".join(
+        f"{item['source']} '{item['title']}'에서 {item['topic']} 단서"
+        for item in top_items[:2]
+    )
+
+    brief = (
+        f"발행 이후 자료 {total_count}건 중 해외 관련 단서는 {len(candidates)}건이고, "
+        f"그중 실제 변화 단서로 볼 만한 것은 {len(concrete)}건입니다. "
+        f"핵심은 {', '.join(topics[:3])} 쪽입니다"
+    )
+    if examples:
+        brief += f" (예: {examples}). "
+    else:
+        brief += ". "
+    if concrete:
+        brief += "이런 내용은 리포트의 해외 성장 가정을 보강할 수 있지만, 매출 규모가 숫자로 확인되기 전까지는 목표가에 전부 반영하긴 어렵습니다."
+    else:
+        brief += "다만 대부분이 전망·관심성 기사에 가까워, 해외 매출이 실제로 늘었다는 근거로는 낮게 반영합니다."
+    if expectation:
+        brief += f" 전망성 표현이 중심인 {len(expectation)}건은 기대감 확인 자료로만 봅니다."
+    return {
+        "signal_count": len(candidates),
+        "concrete_count": len(concrete),
+        "brief": brief,
+    }
 
 
 def _split_report_sentences(text: str) -> list[str]:
@@ -703,21 +838,10 @@ def _objective_theme_read(theme: str, analysis: dict) -> str:
             "리포트 방향과 가격·수급 반응을 분리해서 봐야 합니다."
         )
     if theme == "해외·수출":
-        disclosures = len((analysis.get("context") or {}).get("disclosures", []) or [])
-        news = len((analysis.get("context") or {}).get("news", []) or [])
-        if disclosures or news:
-            bits = []
-            if disclosures:
-                bits.append(f"관련 공시 {disclosures}건")
-            if news:
-                bits.append(f"뉴스 {news}건")
-            return (
-                "DART 기본 재무제표만 보면 해외 매출만 따로 떼어 보기는 어렵습니다. "
-                f"대신 발행 이후 {' · '.join(bits)}이 있어 해외 성장 주장의 추가 근거로 확인합니다."
-            )
+        overseas_brief = _build_overseas_context_brief(analysis.get("context") or {})
         return (
-            "DART 기본 재무제표만 보면 해외 매출만 따로 떼어 보기는 어렵습니다. "
-            "발행 이후 새 공시나 뉴스도 아직 잡히지 않아, 리포트의 해외 성장 주장은 현재 숫자로는 확인이 부족합니다."
+            "DART 표준 재무제표의 손익계산서만으로는 지역별 매출이나 해외 매출 비중이 별도 항목으로 잡히지 않는 경우가 많습니다. "
+            f"{overseas_brief['brief']}"
         )
     return price_action.get("thesis") or "객관 데이터와 함께 재확인이 필요한 논점입니다."
 
@@ -927,8 +1051,8 @@ def _theme_brief_text(row: dict, group: str) -> str:
     if group == "watch":
         if theme == "해외·수출":
             return (
-                "해외 성장은 리포트에서 좋게 쓰였더라도 아직 목표가를 밀어주는 확실한 숫자로 보긴 어렵습니다. "
-                f"{objective} 그래서 이 부분은 '가능성'으로 두고, 목표가 신뢰도에는 보수적으로 반영합니다."
+                "해외 성장 스토리는 목표가를 설명하는 중요한 근거일 수 있지만, 확인 방식이 매출 전체 증가보다 까다롭습니다. "
+                f"{objective} 그래서 해외 관련 단서가 있더라도 실제 매출 기여가 숫자로 확인되기 전까지는 목표가 신뢰도에 보수적으로 반영합니다."
             )
         if theme == "원가·비용":
             return (
@@ -1543,6 +1667,112 @@ def explain_post_event_impact(item: dict) -> str:
     )
 
 
+def explain_post_event_takeaway(item: dict, report: dict | None = None) -> dict:
+    """Explain what the post-report event confirms and how it relates to the report."""
+    title = str(item.get("title") or item.get("detail") or "")
+    event_type = str(item.get("type") or "")
+    ratio_change = _num(item.get("ratio_change"))
+    opinion = str((report or {}).get("opinion") or "")
+    positive_report = opinion in ("매수", "적극매수", "Buy")
+
+    if event_type == "지분공시" or "대량보유" in title or "지분" in title:
+        if ratio_change is not None and ratio_change < 0:
+            return {
+                "tone": "부정",
+                "confirmed": (
+                    f"발행 이후 주요주주 보유비율이 {ratio_change:+.2f}%p 낮아진 사실을 확인했습니다. "
+                    "이익 전망을 직접 바꾸는 공시는 아니지만, 시장에 나올 수 있는 매도 물량이 늘어난 쪽으로 읽습니다."
+                ),
+                "relation": (
+                    "매수 리포트의 목표가 방향과는 단기적으로 엇갈립니다. 실적 전제가 맞더라도 수급이 따라오지 않으면 목표가 반영 속도는 늦어질 수 있습니다."
+                    if positive_report else
+                    "보수적인 리포트라면 그 조심스러운 판단을 뒷받침하는 사후 수급 근거로 볼 수 있습니다."
+                ),
+            }
+        if ratio_change is not None and ratio_change > 0:
+            return {
+                "tone": "긍정",
+                "confirmed": (
+                    f"발행 이후 주요주주 보유비율이 {ratio_change:+.2f}%p 높아진 사실을 확인했습니다. "
+                    "최소한 수급 측면에서는 매도 압력보다 보유 확대가 관찰된 변화입니다."
+                ),
+                "relation": (
+                    "매수 리포트라면 목표가 반영을 방해하는 수급 요인이 줄어든 쪽으로 해석할 수 있습니다. 다만 목표가 자체는 여전히 실적과 현금흐름으로 확인돼야 합니다."
+                    if positive_report else
+                    "보수적 리포트와는 다소 다른 방향의 사후 변화입니다. 수급은 우호적이지만 실적 근거를 함께 봐야 합니다."
+                ),
+            }
+        return {
+            "tone": "확인 필요",
+            "confirmed": "발행 이후 지분 관련 공시가 확인됐지만, 보유 목적과 실제 매매 방향을 추가로 구분해야 합니다.",
+            "relation": "리포트의 목표가 방향과 바로 연결하기보다 단기 수급 변화 가능성으로만 반영합니다.",
+        }
+
+    if "실적" in title or "잠정" in title:
+        return {
+            "tone": "핵심 확인",
+            "confirmed": (
+                "발행 이후 실제 실적 또는 잠정 실적이 새로 공개됐습니다. "
+                "리포트가 예상했던 매출·영업이익·마진 전제가 숫자로 맞았는지 다시 대조해야 하는 자료입니다."
+            ),
+            "relation": (
+                "실적이 리포트의 성장·마진 방향과 같으면 신뢰도는 올라가고, 다르면 목표가 근거를 낮춰 봅니다. "
+                "따라서 이 공시는 발행 이후 변화 중 가장 직접적인 검증 자료입니다."
+            ),
+        }
+
+    if "기업설명회" in title or "IR" in title.upper():
+        return {
+            "tone": "중립~확인",
+            "confirmed": (
+                "발행 이후 회사가 투자자에게 설명한 전략·실적 방향이 추가로 공개됐습니다. "
+                "새 숫자라기보다는 경영진이 어떤 전제를 강조했는지 확인하는 자료입니다."
+            ),
+            "relation": (
+                "리포트가 말한 성장 스토리와 회사 설명이 같은 방향이면 보조 근거가 됩니다. "
+                "반대로 강조점이 달라졌다면 리포트의 전제가 일부 낡았을 수 있습니다."
+            ),
+        }
+
+    if "투자" in title or "계약" in title:
+        return {
+            "tone": "양면",
+            "confirmed": (
+                "발행 이후 투자·계약 관련 변화가 확인됐습니다. "
+                "매출 성장에는 긍정적일 수 있지만 투자비, 운전자본, 회수 시점까지 같이 봐야 합니다."
+            ),
+            "relation": (
+                "리포트가 성장 확대를 핵심 근거로 삼았다면 방향성은 맞을 수 있습니다. "
+                "다만 단기 이익과 현금흐름 부담이 커지면 목표가 반영은 지연될 수 있습니다."
+            ),
+        }
+
+    if "지속가능" in title or "ESG" in title.upper():
+        return {
+            "tone": "중립",
+            "confirmed": (
+                "발행 이후 지속가능경영·ESG 관련 자료가 공개됐습니다. "
+                "매출이나 이익 추정치를 바로 바꾸는 자료라기보다 비재무 리스크와 지배구조를 확인하는 자료입니다."
+            ),
+            "relation": (
+                "리포트의 목표가 산식과 직접 연결되지는 않습니다. "
+                "다만 리포트가 브랜드, 해외 확장, 지배구조 안정성을 강조했다면 보조 확인 자료로 둡니다."
+            ),
+        }
+
+    return {
+        "tone": "확인",
+        "confirmed": (
+            "리포트 발행 이후 새 공시가 확인됐습니다. "
+            "아직 매출·이익 숫자를 바로 바꾸는 자료인지는 제한적이지만, 발행 당시 정보 이후 추가된 사실입니다."
+        ),
+        "relation": (
+            "리포트의 핵심 전제와 같은 방향인지 확인해야 합니다. "
+            "같은 방향이면 보조 근거, 다른 방향이면 발행 이후 괴리 근거로 반영합니다."
+        ),
+    }
+
+
 def explain_growth_history(rev: dict) -> tuple[str, str]:
     if rev.get("verdict") == "확인 필요":
         return (
@@ -1599,7 +1829,7 @@ def explain_growth_history(rev: dict) -> tuple[str, str]:
     return title, body
 
 
-def build_post_report_events(context: dict, report_date: str) -> list[dict]:
+def build_post_report_events(context: dict, report_date: str, report: dict | None = None) -> list[dict]:
     events: list[dict] = []
     for item in (context or {}).get("disclosures", [])[:12]:
         date = _normalize_event_date(item.get("date"))
@@ -1613,6 +1843,7 @@ def build_post_report_events(context: dict, report_date: str) -> list[dict]:
             "url": item.get("url", ""),
         }
         event["impact"] = explain_post_event_impact(event)
+        event["takeaway"] = explain_post_event_takeaway(event, report)
         events.append(event)
     for item in (context or {}).get("ownership", [])[:8]:
         date = _normalize_event_date(item.get("date"))
@@ -1630,6 +1861,7 @@ def build_post_report_events(context: dict, report_date: str) -> list[dict]:
             "ratio_change": change,
         }
         event["impact"] = explain_post_event_impact(event)
+        event["takeaway"] = explain_post_event_takeaway(event, report)
         events.append(event)
     events.sort(key=lambda item: item.get("date") or "", reverse=True)
     return events[:6]
@@ -2200,7 +2432,7 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         # 발행일 주가 — pykrx 자동 조회, 실패 시 현재가로 폴백
         price_at_pub = fetch_price_at_date(stock_code, report_date) or price
         context = fetch_report_context(comp_name, stock_code)
-        post_events = build_post_report_events(context, report_date)
+        post_events = build_post_report_events(context, report_date, {"opinion": sel_opinion, "target_price": target_price})
         comp_code = stock_code
     else:
         # ── 데모 폴백 ──
@@ -2984,6 +3216,8 @@ with tab2:
             detail = item.get("detail", "")
             summary = item.get("summary") or summarize_post_event(item)
             impact = item.get("impact") or explain_post_event_impact(item)
+            takeaway = item.get("takeaway") or explain_post_event_takeaway(item, rep)
+            tone = takeaway.get("tone", "확인")
             url = item.get("url")
             link_html = (
                 f"<div style='font-size:12px;margin-top:2px'>"
@@ -2991,12 +3225,21 @@ with tab2:
                 f"</div>"
                 if url else ""
             )
+            takeaway_html = (
+                f"<div style='font-size:12px;color:#334155;line-height:1.55;margin-top:6px'>"
+                f"<b>확인된 변화 · {html.escape(tone)}</b><br>{html.escape(takeaway.get('confirmed', ''))}"
+                f"</div>"
+                f"<div style='font-size:12px;color:#475569;line-height:1.55;margin-top:3px'>"
+                f"<b>리포트와의 관계</b><br>{html.escape(takeaway.get('relation', ''))}"
+                f"</div>"
+            )
             st.markdown(
                 f"""
                 <div style="padding:8px 0;border-bottom:1px solid #E5EAF0">
                   <div style="font-size:14px;color:#17202A;font-weight:800">{html.escape(date)} {html.escape(event_type)} · {html.escape(detail)}</div>
                   {link_html}
                   <div style="font-size:12px;color:#667085;line-height:1.5;margin-top:4px">{html.escape(summary)}</div>
+                  {takeaway_html}
                   <div style="font-size:12px;color:#3D4A5C;line-height:1.5;margin-top:4px;font-weight:650">{html.escape(impact)}</div>
                 </div>
                 """,

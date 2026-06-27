@@ -457,10 +457,16 @@ def build_update_audit(analysis: dict) -> list[dict]:
             "점수 영향": f"-{factor.get('points', 0)}점" if factor.get("points", 0) else "정성 반영",
         })
     for event in timeline.get("events", [])[:6]:
+        takeaway = event.get("takeaway") or {}
+        confirmed = takeaway.get("confirmed", "")
+        relation = takeaway.get("relation", "")
+        judgment = event.get("impact") or "리포트 발행 이후 확인된 항목입니다. 목표가·의견이 여전히 유효한지 최신화해야 합니다."
+        if confirmed or relation:
+            judgment = " ".join(part for part in (confirmed, relation, judgment) if part)
         rows.append({
             "평가 구분": "발행 후 업데이트",
             "항목": f"{event.get('date', '')} · {event.get('type', '')}",
-            "판단": event.get("impact") or "리포트 발행 이후 확인된 항목입니다. 목표가·의견이 여전히 유효한지 최신화해야 합니다.",
+            "판단": judgment,
             "근거": event.get("detail", ""),
             "점수 영향": "발행 이후 괴리 근거",
         })
