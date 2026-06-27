@@ -3488,19 +3488,16 @@ with tab6:
         with st.expander(f"📋 발행 후 공시 ({len(disclosures)}건)", expanded=False):
             for item in disclosures:
                 render_source_item(item, "disclosure")
-                st.divider()
 
     if news:
         with st.expander(f"📰 뉴스 ({len(news)}건)", expanded=False):
             for item in news:
                 render_source_item(item, "news")
-                st.divider()
 
     if blogs:
         with st.expander(f"📝 블로그·해석 ({len(blogs)}건)", expanded=False):
             for item in blogs:
                 render_source_item(item, "blog")
-                st.divider()
 
     st.markdown("#### 자료 흐름")
     st.dataframe(pd.DataFrame(build_data_source_logic(A)), width="stretch", hide_index=True)
