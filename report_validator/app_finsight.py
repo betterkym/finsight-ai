@@ -39,6 +39,7 @@ from report_validator.finsight_modules import (
 )
 from core.mode_views import build_tracker_table, build_peer_benchmark
 from core import data_collector as dc
+from analyst_workbench.ui_components import financial_trend_chart
 from analyst_workbench.interpretation import interpret_price_action
 from report_validator.timeline_module import build_post_publish_timeline, fetch_foreign_flow, fetch_price_at_date
 from report_validator.scoring_module import build_report_verdict
@@ -46,6 +47,7 @@ from report_validator.report_assessor import build_alignment_assessment, apply_a
 from report_validator.retail_report import generate_retail_html_report, generate_retail_pdf_report
 from report_validator.evidence_audit import (
     build_data_source_logic,
+    build_dart_health_summary,
     build_kpi_snapshot,
     build_scoring_rulebook,
     build_score_audit,
@@ -1086,6 +1088,23 @@ def _num(value) -> float | None:
         return number if pd.notna(number) else None
     except (TypeError, ValueError):
         return None
+
+
+def tracker_style(frame: pd.DataFrame):
+    delta_cols = [column for column in frame.columns if "QoQ" in column or "YoY" in column]
+
+    def color(value):
+        if not isinstance(value, (int, float)) or pd.isna(value):
+            return ""
+        if value > 0:
+            return "color:#166534;background-color:#F0FDF4"
+        if value < 0:
+            return "color:#991B1B;background-color:#FEF2F2"
+        return ""
+
+    if not delta_cols:
+        return frame.style.format(precision=1, na_rep="Needs Review")
+    return frame.style.format(precision=1, na_rep="Needs Review").map(color, subset=delta_cols)
 
 
 def _fmt_pct(value) -> str:
@@ -2412,16 +2431,19 @@ with sc1:
     base_total = V.get("base_total", V["total"])
     penalty = V.get("alignment", {}).get("penalty", 0)
     st.markdown(
-        f"<div style='text-align:center;padding:20px 8px;border:2px solid {gc};"
-        f"border-radius:12px;background:{COLOR['bg']}'>"
-        f"<div style='font-size:12px;color:#666;font-weight:600'>신뢰도 점수</div>"
-        f"<div style='font-size:48px;font-weight:900;color:{gc};line-height:1.0'>{V['total']}</div>"
-        f"<div style='font-size:14px;color:#999;margin-bottom:8px'>/100</div>"
-        f"<div style='font-size:18px;color:{gc};font-weight:700;margin-bottom:6px'>{V['grade']}등급</div>"
-        f"<div style='font-size:14px;color:#666;margin-bottom:10px'>{V['label']}</div>"
-        f"<div style='font-size:20px;letter-spacing:2px'>{'★'*V['stars']}{'☆'*(5-V['stars'])}</div>"
-        f"<div style='font-size:12px;color:#777;margin-top:10px'>기초 {base_total}점 · 객관분석 -{penalty}점</div>"
-        f"</div>",
+        f"<div style='text-align:center;padding:0 0 20px;border:1px solid #E6E9EE;"
+        f"border-radius:14px;background:#FFFFFF;overflow:hidden;"
+        f"box-shadow:0 2px 8px rgba(16,24,40,0.06)'>"
+        f"<div style='height:5px;background:{gc}'></div>"
+        f"<div style='padding:18px 8px 0'>"
+        f"<div style='font-size:12px;color:#8A94A3;font-weight:700;letter-spacing:0.3px'>신뢰도 점수</div>"
+        f"<div style='font-size:52px;font-weight:900;color:{gc};line-height:1.05;letter-spacing:-0.03em'>{V['total']}"
+        f"<span style='font-size:17px;color:#B0B8C4;font-weight:700'> /100</span></div>"
+        f"<div style='display:inline-block;font-size:14px;color:#fff;font-weight:800;background:{gc};"
+        f"padding:3px 14px;border-radius:20px;margin:8px 0 8px'>{V['grade']}등급 · {V['label']}</div>"
+        f"<div style='font-size:21px;letter-spacing:3px;color:{gc};margin-top:2px'>{'★'*V['stars']}<span style='color:#D8DEE6'>{'★'*(5-V['stars'])}</span></div>"
+        f"<div style='font-size:12px;color:#8A94A3;margin-top:12px'>기초 {base_total}점 · 객관분석 −{penalty}점</div>"
+        f"</div></div>",
         unsafe_allow_html=True,
     )
 
@@ -3069,6 +3091,23 @@ with tab6:
         "주장이 아니라 확인된 팩트와 산식으로 신뢰도 점수를 만들었습니다.",
         "목표가 편차 30점 / 발행 이후 괴리 30점 / 필요 실적 40점 / 본문 의견·객관분석 추가 차감",
     )
+    dart_health = build_dart_health_summary(A)
+    health_color = "#0F6E56" if "연결" in dart_health.get("title", "") and not A.get("is_demo_financials") else "#BA7517"
+    st.markdown(
+        f"""
+        <div style="margin:8px 0 14px;padding:12px 14px;border:1px solid #DCE2E8;
+                    border-left:4px solid {health_color};border-radius:8px;background:#FFFFFF">
+          <div style="font-size:14px;font-weight:850;color:#17202A">{html.escape(dart_health.get('title', 'DART 상태'))}</div>
+          <div style="font-size:13px;color:#334155;line-height:1.55;margin-top:4px">
+            {html.escape(dart_health.get('status', ''))}<br>
+            재무: {html.escape(dart_health.get('financials', ''))}<br>
+            공시: {html.escape(dart_health.get('disclosures', ''))}<br>
+            핵심 누락: {html.escape(dart_health.get('missing', ''))}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     formula = score_formula(A)
     st.markdown(f"**{formula['text']}**")
 
@@ -3094,48 +3133,51 @@ with tab6:
         with st.expander("더 자세히 보고 싶어요 — 매출·마진·현금흐름 흐름 보기"):
             kpis_detail = A.get("kpis")
             st.caption(
-                "리포트 목표가가 설득력을 가지려면 매출 성장, 영업이익률, CFO/FCF 흐름이 같은 방향으로 받쳐줘야 합니다. "
-                "급변한 분기는 색으로 표시했고, 마우스를 올리면 해당 분기의 숫자와 해석을 볼 수 있습니다."
+                "애널리스트 워크벤치에서 쓰던 분기 실적 트래커입니다. 매출액, OPM, CFO/매출 흐름을 먼저 보고, "
+                "아래 표에서 QoQ/YoY와 현금흐름·운전자본 항목을 확인합니다."
             )
             if kpis_detail is not None and not kpis_detail.empty:
-                st.plotly_chart(annotated_quarter_chart(kpis_detail, A.get("context", {})), width="stretch", key="validator_annotated_quarter_chart")
+                st.plotly_chart(financial_trend_chart(kpis_detail), width="stretch", key="validator_financial_trend_chart")
+                st.dataframe(tracker_style(build_tracker_table(kpis_detail)), width="stretch", height=430)
 
-                chart_frame = kpis_detail.set_index("period")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.markdown("##### 전년 대비 성장")
-                    growth_cols = [col for col in ["revenue_yoy", "operating_profit_yoy"] if col in chart_frame]
-                    if growth_cols:
+                with st.expander("급변 분기와 세부 흐름 더 보기"):
+                    st.plotly_chart(annotated_quarter_chart(kpis_detail, A.get("context", {})), width="stretch", key="validator_annotated_quarter_chart")
+
+                    chart_frame = kpis_detail.set_index("period")
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.markdown("##### 전년 대비 성장")
+                        growth_cols = [col for col in ["revenue_yoy", "operating_profit_yoy"] if col in chart_frame]
+                        if growth_cols:
+                            st.line_chart(
+                                chart_frame[growth_cols].rename(columns={
+                                    "revenue_yoy": "매출 YoY",
+                                    "operating_profit_yoy": "영업이익 YoY",
+                                }),
+                                height=230,
+                            )
+                    with col_b:
+                        st.markdown("##### 마진 구조")
+                        margin_cols = [col for col in ["opm", "cogs_ratio", "sga_ratio"] if col in chart_frame]
+                        if margin_cols:
+                            st.line_chart(
+                                chart_frame[margin_cols].rename(columns={
+                                    "opm": "OPM",
+                                    "cogs_ratio": "원가율",
+                                    "sga_ratio": "판관비율",
+                                }),
+                                height=230,
+                            )
+
+                    st.markdown("##### 현금흐름 전환")
+                    cash_cols = [col for col in ["cfo_margin", "fcf_margin"] if col in chart_frame]
+                    if cash_cols:
                         st.line_chart(
-                            chart_frame[growth_cols].rename(columns={
-                                "revenue_yoy": "매출 YoY",
-                                "operating_profit_yoy": "영업이익 YoY",
+                            chart_frame[cash_cols].rename(columns={
+                                "cfo_margin": "CFO 마진",
+                                "fcf_margin": "FCF(잉여현금흐름) 마진",
                             }),
                             height=230,
                         )
-                with col_b:
-                    st.markdown("##### 마진 구조")
-                    margin_cols = [col for col in ["opm", "cogs_ratio", "sga_ratio"] if col in chart_frame]
-                    if margin_cols:
-                        st.line_chart(
-                            chart_frame[margin_cols].rename(columns={
-                                "opm": "OPM",
-                                "cogs_ratio": "원가율",
-                                "sga_ratio": "판관비율",
-                            }),
-                            height=230,
-                        )
-
-                st.markdown("##### 현금흐름 전환")
-                cash_cols = [col for col in ["cfo_margin", "fcf_margin"] if col in chart_frame]
-                if cash_cols:
-                    st.line_chart(
-                        chart_frame[cash_cols].rename(columns={
-                            "cfo_margin": "CFO 마진",
-                            "fcf_margin": "FCF(잉여현금흐름) 마진",
-                        }),
-                        height=230,
-                    )
-
-                st.markdown("##### 분기별 원자료")
-                st.dataframe(build_tracker_table(kpis_detail), width="stretch", height=360)
+            else:
+                st.warning("DART 재무가 비어 있어 분기 실적 트래커를 표시하지 못했습니다. 위 DART 연결 상태와 종목 매칭을 먼저 확인하세요.")
