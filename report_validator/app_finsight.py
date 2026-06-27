@@ -2179,9 +2179,20 @@ if search_result and search_result.get("success"):
     stock_code = search_result.get("stock_code")
     mean = consensus.get("price_target_mean") or 0
     if mean:
+        # 현재가 + 당일 변동 추가
+        current_price = dc.get_current_price(stock_code) if stock_code else None
+        price_info = ""
+        if current_price:
+            market_snap = dc.get_market_snapshot(stock_code) if stock_code else {}
+            change_pct = market_snap.get("return_1d")
+            price_info = f" | 현재가 **{current_price:,.0f}원**"
+            if change_pct is not None:
+                arrow = "📈" if change_pct >= 0 else "📉"
+                price_info += f" {arrow} {change_pct:+.1f}%"
+
         st.sidebar.success(
             f"**{selected_company}**\n\n"
-            f"증권사 목표가 평균 **{mean:,.0f}원**\n\n"
+            f"증권사 목표가 평균 **{mean:,.0f}원**{price_info}\n\n"
             f"투자의견 {consensus.get('opinion_label', '확인 필요')} · {consensus.get('create_date', '')}"
         )
     else:
