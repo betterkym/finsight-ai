@@ -20,10 +20,22 @@ from io import BytesIO
 from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import os
 import datetime
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+# Streamlit Cloud Secrets를 환경변수로 연결한다.
+# 배포 환경엔 .env가 없으므로, st.secrets에 넣은 DART_API_KEY 등을
+# core.data_collector가 import 시점에 os.getenv로 읽을 수 있게 미리 주입한다.
+# (반드시 core.* import보다 먼저 실행되어야 한다.)
+try:
+    for _secret_key, _secret_val in st.secrets.items():
+        if isinstance(_secret_val, str) and _secret_val and not os.environ.get(_secret_key):
+            os.environ[_secret_key] = _secret_val
+except Exception:
+    pass
 
 from core.kpi_engine import calculate_quarterly_kpis
 from core.diagnostics import (
