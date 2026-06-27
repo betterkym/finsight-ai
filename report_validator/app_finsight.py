@@ -140,6 +140,54 @@ def fetch_real_financials(company_name: str) -> dict | None:
         return None
 
 
+def diagnose_real_financials(company_name: str) -> list[dict]:
+    """데모로 폴백된 경우, 어느 단계에서 막혔는지 단계별로 점검한다.
+
+    배포 환경(.env 없음, 클라우드 IP)에서 DART/FDR이 막히는 지점을 그대로 노출해
+    추측 없이 원인을 찾기 위한 진단표.
+    """
+    steps: list[dict] = []
+
+    def add(name: str, ok: bool, detail: str) -> None:
+        steps.append({"단계": name, "상태": "✅ 정상" if ok else "❌ 실패", "내용": detail})
+
+    key_ok = bool(dc.DART_API_KEY)
+    add("DART_API_KEY 인식", key_ok,
+        f"키 끝 4자리 …{dc.DART_API_KEY[-4:]}" if key_ok
+        else "키 없음 — Streamlit Cloud의 Settings ▸ Secrets에 DART_API_KEY를 넣어야 합니다")
+    if not key_ok:
+        return steps
+
+    try:
+        info = dc.resolve_company(company_name)
+        ok = bool(info and info.get("stock_code"))
+        add("종목 매칭(DART)", ok,
+            f"{info.get('company')} / {info.get('stock_code')}" if ok else "매칭 실패")
+        if not ok:
+            return steps
+        code = info["stock_code"]
+    except Exception as e:
+        add("종목 매칭(DART)", False, f"오류: {e}")
+        return steps
+
+    try:
+        fin = dc.get_quarterly_financials(company_name, quarters=24)
+        n = 0 if fin is None else len(fin)
+        add("분기 재무(DART)", n >= 4, f"{n}분기 수집" if n else "재무가 비어 있음")
+    except Exception as e:
+        add("분기 재무(DART)", False, f"오류: {e}")
+
+    try:
+        price = dc.get_current_price(code)
+        add("현재가(FinanceDataReader)", bool(price),
+            f"{price:,.0f}원" if price
+            else "가격 조회 실패 — 클라우드 IP에서 외부 시세 접근이 막혔을 수 있습니다")
+    except Exception as e:
+        add("현재가(FinanceDataReader)", False, f"오류: {e}")
+
+    return steps
+
+
 @st.cache_data(show_spinner="📰 네이버 리포트 목록 확인 중...")
 def fetch_research_list(stock_code: str) -> list[dict]:
     return fetch_naver_research_reports(stock_code, pages=2, limit=20)
@@ -2409,6 +2457,14 @@ if A.get("is_demo_financials"):
     meta_lines.append(
         "재무 항목은 현재 연결 가능한 보조값으로 계산했습니다. 실제 DART 반영 상태와 점수 영향은 '근거·출처' 탭에서 확인할 수 있습니다."
     )
+    with st.expander("🔍 DART 재무가 연결 안 되는 이유 진단", expanded=True):
+        diag_rows = diagnose_real_financials(selected_company or co.get("name", ""))
+        st.dataframe(pd.DataFrame(diag_rows), use_container_width=True, hide_index=True)
+        st.caption(
+            "❌가 처음 뜨는 단계가 원인입니다. "
+            "DART_API_KEY가 ❌면 Streamlit Cloud Secrets에 키를 넣으세요. "
+            "현재가만 ❌면 클라우드에서 외부 시세 접근이 막힌 것이라 별도 처리가 필요합니다."
+        )
 else:
     share_text = f" · 발행주식수 {co['shares_outstanding']:,.0f}주" if co.get("shares_outstanding") else ""
     meta_lines.append(f"실제 DART 재무 연동 · 현재가 {co['current_price']:,.0f}원{share_text}")
