@@ -30,6 +30,13 @@ def _eok(value) -> str:
     return f"{number / 100000000:,.0f}억원"
 
 
+def _plain_eok(value) -> str:
+    number = _num(value)
+    if number is None:
+        return "N/A"
+    return f"{number / 100000000:,.0f}억원"
+
+
 def _pct(value) -> str:
     number = _num(value)
     if number is None:
@@ -49,6 +56,63 @@ def _shares(value) -> str:
     if number is None:
         return "N/A"
     return f"{number:,.0f}주"
+
+
+def _latest_kpi_snapshot(kpis: pd.DataFrame | None) -> dict:
+    if kpis is None or kpis.empty:
+        return {"period": "", "rows": 0, "summary": "DART 재무 데이터 없음", "missing": "전체"}
+    latest = kpis.iloc[-1]
+    period = str(latest.get("period") or "")
+    core = {
+        "매출": latest.get("revenue"),
+        "영업이익": latest.get("operating_profit"),
+        "순이익": latest.get("net_income"),
+        "CFO": latest.get("cfo"),
+    }
+    missing = [name for name, value in core.items() if _num(value) is None]
+    summary_bits = [
+        f"{len(kpis)}개 분기",
+        f"최신 {period}" if period else "최신 분기 N/A",
+        f"매출 {_plain_eok(latest.get('revenue'))}",
+        f"영업이익 {_plain_eok(latest.get('operating_profit'))}",
+        f"OPM {_pct(latest.get('opm'))}",
+    ]
+    if _num(latest.get("revenue_yoy")) is not None:
+        summary_bits.append(f"매출 YoY {_pct(latest.get('revenue_yoy'))}")
+    if _num(latest.get("operating_profit_yoy")) is not None:
+        summary_bits.append(f"영업이익 YoY {_pct(latest.get('operating_profit_yoy'))}")
+    if _num(latest.get("cfo_margin")) is not None:
+        summary_bits.append(f"CFO 마진 {_pct(latest.get('cfo_margin'))}")
+    if _num(latest.get("fcf_margin")) is not None:
+        summary_bits.append(f"FCF 마진 {_pct(latest.get('fcf_margin'))}")
+    return {
+        "period": period,
+        "rows": len(kpis),
+        "summary": " · ".join(summary_bits),
+        "missing": "없음" if not missing else ", ".join(missing),
+    }
+
+
+def _dart_status_text(analysis: dict, kpis: pd.DataFrame | None) -> str:
+    snapshot = _latest_kpi_snapshot(kpis)
+    if analysis.get("is_demo_financials"):
+        return f"데모 재무 사용 · {snapshot['summary']}"
+    if snapshot["rows"]:
+        return f"연결 · {snapshot['summary']} · 핵심 누락 {snapshot['missing']}"
+    if dc.DART_API_KEY:
+        return "키 있음 · 재무 수집 실패 또는 종목 매칭 재확인 필요"
+    return "DART_API_KEY 필요"
+
+
+def _dart_event_status(context: dict) -> str:
+    errors = [err for err in (context.get("errors") or []) if "disclosures" in str(err).lower() or "ownership" in str(err).lower()]
+    disclosures = len(context.get("disclosures", []) or [])
+    ownership = len(context.get("ownership", []) or [])
+    if errors:
+        return f"일부 오류 · {' / '.join(str(err)[:80] for err in errors[:2])}"
+    if disclosures or ownership:
+        return f"연결 · 공시 {disclosures}건 · 지분공시 {ownership}건"
+    return "연결 · 발행 이후 표에 잡힌 공시/지분공시 없음"
 
 
 def _score_label(axis: dict) -> str:
@@ -183,6 +247,32 @@ def score_formula(analysis: dict) -> dict:
     }
 
 
+def build_dart_health_summary(analysis: dict) -> dict:
+    """Compact DART status for the evidence tab."""
+    kpis = analysis.get("kpis")
+    context = analysis.get("context") or {}
+    snapshot = _latest_kpi_snapshot(kpis)
+    if analysis.get("is_demo_financials"):
+        title = "DART 재무 미연결"
+        status = "데모 재무로 계산 중"
+    elif snapshot["rows"]:
+        title = "DART 재무 연결"
+        status = "실제 OpenDART 재무 반영"
+    elif dc.DART_API_KEY:
+        title = "DART 키 확인됨"
+        status = "재무 수집 실패 또는 종목 매칭 재확인 필요"
+    else:
+        title = "DART 키 없음"
+        status = "DART_API_KEY 설정 필요"
+    return {
+        "title": title,
+        "status": status,
+        "financials": snapshot["summary"],
+        "missing": snapshot["missing"],
+        "disclosures": _dart_event_status(context),
+    }
+
+
 def build_source_audit(analysis: dict) -> list[dict]:
     report = analysis["report"]
     report_batch = analysis.get("report_batch") or []
@@ -192,9 +282,7 @@ def build_source_audit(analysis: dict) -> list[dict]:
     timeline = analysis["timeline"]
     context = analysis.get("context") or {}
     kpis = analysis.get("kpis")
-    latest_period = ""
-    if kpis is not None and not kpis.empty:
-        latest_period = str(kpis.iloc[-1].get("period") or "")
+    dart_snapshot = _latest_kpi_snapshot(kpis)
 
     report_source = "사용자 입력"
     if report.get("file_name") and report.get("pdf_url"):
@@ -236,8 +324,8 @@ def build_source_audit(analysis: dict) -> list[dict]:
         },
         {
             "자료": "DART 재무",
-            "출처": "OpenDART 분기 재무제표",
-            "확인값": f"최근 분기 {latest_period}, 발행주식수 {_shares(company.get('shares_outstanding'))}",
+            "출처": "OpenDART 분기 재무제표" if not analysis.get("is_demo_financials") else "내장 데모 재무",
+            "확인값": f"{dart_snapshot['summary']}, 발행주식수 {_shares(company.get('shares_outstanding'))}, 핵심 누락 {dart_snapshot['missing']}",
             "점수 연결": "EPS 역산, 재무 이상징후, 현금 전환 평가에 사용합니다.",
         },
         {
@@ -249,7 +337,7 @@ def build_source_audit(analysis: dict) -> list[dict]:
         {
             "자료": "발행 후 공시",
             "출처": "DART 최근 공시·대량보유 보고",
-            "확인값": f"공시 {len(context.get('disclosures', []) or [])}건, 지분공시 {len(context.get('ownership', []) or [])}건",
+            "확인값": _dart_event_status(context),
             "점수 연결": "리포트 발행 이후 새로 확인된 변화와 수급 해석에 사용합니다.",
         },
         {
@@ -274,6 +362,7 @@ def build_data_source_logic(analysis: dict) -> list[dict]:
     report = analysis.get("report", {})
     report_batch = analysis.get("report_batch") or []
     context = analysis.get("context") or {}
+    kpis = analysis.get("kpis")
     external = context.get("external_drivers") or {}
     status_by_source = {
         str(row.get("source", "")).lower(): row
@@ -315,14 +404,14 @@ def build_data_source_logic(analysis: dict) -> list[dict]:
             "확인 항목": "분기 재무제표, EPS, 매출·이익·마진, CFO/FCF, 발행주식수",
             "자료": "OpenDART API",
             "분석 연결": "목표가를 EPS 성장률로 역산하고, 과거 실적 범위와 재무 이상징후를 함께 대조합니다.",
-            "반영 상태": "데모 재무 사용" if analysis.get("is_demo_financials") else ("연결" if dc.DART_API_KEY else "DART_API_KEY 필요"),
+            "반영 상태": _dart_status_text(analysis, kpis),
         },
         {
             "검증 단계": "발행 이후 공시",
             "확인 항목": "발행 이후 공시, 지분공시, 주요주주 변동",
             "자료": "OpenDART 공시·대량보유 보고",
             "분석 연결": "리포트 발행일 이후 전제 변화와 수급 해석을 발행 이후 괴리 축에 반영합니다.",
-            "반영 상태": f"공시 {len(context.get('disclosures', []) or [])}건 · 지분공시 {len(context.get('ownership', []) or [])}건",
+            "반영 상태": _dart_event_status(context),
         },
         {
             "검증 단계": "주가·수급",

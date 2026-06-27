@@ -23,19 +23,38 @@ try:
 except Exception:
     pass
 
-DART_API_KEY = os.getenv("DART_API_KEY", "")
-ECOS_API_KEY = os.getenv("ECOS_API_KEY", "")
-NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "")
-NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
-KOSIS_API_KEY = os.getenv("KOSIS_API_KEY", "")
-KOSIS_FOOD_TABLE_ID = os.getenv("KOSIS_FOOD_TABLE_ID", "")
-KAMIS_API_ID = os.getenv("KAMIS_API_ID", "")
-KAMIS_API_KEY = os.getenv("KAMIS_API_KEY", "")
-FRED_API_KEY = os.getenv("FRED_API_KEY", "")
-TRADING_ECONOMICS_KEY = os.getenv("TRADING_ECONOMICS_KEY", "")
-UN_COMTRADE_KEY = os.getenv("UN_COMTRADE_KEY", "")
-KRX_ID = os.getenv("KRX_ID", "")
-KRX_PW = os.getenv("KRX_PW", "")
+
+def _secret(name: str) -> str:
+    value = os.getenv(name, "")
+    if value:
+        return value
+    try:
+        import streamlit as st
+
+        if name in st.secrets:
+            return str(st.secrets.get(name) or "")
+        for section in ("api", "apis", "api_keys", "credentials"):
+            group = st.secrets.get(section, {})
+            if hasattr(group, "get") and group.get(name):
+                return str(group.get(name) or "")
+    except Exception:
+        pass
+    return ""
+
+
+DART_API_KEY = _secret("DART_API_KEY")
+ECOS_API_KEY = _secret("ECOS_API_KEY")
+NAVER_CLIENT_ID = _secret("NAVER_CLIENT_ID")
+NAVER_CLIENT_SECRET = _secret("NAVER_CLIENT_SECRET")
+KOSIS_API_KEY = _secret("KOSIS_API_KEY")
+KOSIS_FOOD_TABLE_ID = _secret("KOSIS_FOOD_TABLE_ID")
+KAMIS_API_ID = _secret("KAMIS_API_ID")
+KAMIS_API_KEY = _secret("KAMIS_API_KEY")
+FRED_API_KEY = _secret("FRED_API_KEY")
+TRADING_ECONOMICS_KEY = _secret("TRADING_ECONOMICS_KEY")
+UN_COMTRADE_KEY = _secret("UN_COMTRADE_KEY")
+KRX_ID = _secret("KRX_ID")
+KRX_PW = _secret("KRX_PW")
 DART_BASE = "https://opendart.fss.or.kr/api"
 ECOS_BASE = "https://ecos.bok.or.kr/api/StatisticSearch"
 NAVER_NEWS_BASE = "https://openapi.naver.com/v1/search/news.json"
