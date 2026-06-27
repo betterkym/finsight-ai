@@ -3444,6 +3444,64 @@ with tab6:
     st.markdown("#### 원자료 연결")
     st.dataframe(pd.DataFrame(build_source_audit(A)), width="stretch", hide_index=True)
 
+    # 발행 후 공시·외부 정황을 expander로 분류해서 보기 좋게 표시
+    context = A.get("context") or {}
+    disclosures = context.get("disclosures") or []
+    news = context.get("news") or []
+    blogs = context.get("blogs") or []
+
+    def render_source_item(item: dict, item_type: str) -> None:
+        """공시·뉴스·블로그 항목을 간결한 카드 형식으로 렌더링."""
+        url = item.get("url") or ""
+        title = item.get("title") or ""
+        source = item.get("source") or ""
+        description = item.get("description") or ""
+        date_str = item.get("date") or ""
+
+        badge_map = {"disclosure": "📋", "news": "📰", "blog": "📝"}
+        badge = badge_map.get(item_type, "📌")
+
+        cols = st.columns([0.03, 0.97])
+        with cols[0]:
+            st.write(badge)
+        with cols[1]:
+            if url:
+                st.markdown(f"**[{title}]({url})**")
+            else:
+                st.markdown(f"**{title}**")
+
+            caption_parts = []
+            if source:
+                caption_parts.append(source)
+            if date_str:
+                caption_parts.append(date_str[:10])
+            if description:
+                summary = description[:70].strip()
+                if len(description) > 70:
+                    summary += "..."
+                caption_parts.append(summary)
+
+            if caption_parts:
+                st.caption(" · ".join(caption_parts))
+
+    if disclosures:
+        with st.expander(f"📋 발행 후 공시 ({len(disclosures)}건)", expanded=False):
+            for item in disclosures:
+                render_source_item(item, "disclosure")
+                st.divider()
+
+    if news:
+        with st.expander(f"📰 뉴스 ({len(news)}건)", expanded=False):
+            for item in news:
+                render_source_item(item, "news")
+                st.divider()
+
+    if blogs:
+        with st.expander(f"📝 블로그·해석 ({len(blogs)}건)", expanded=False):
+            for item in blogs:
+                render_source_item(item, "blog")
+                st.divider()
+
     st.markdown("#### 자료 흐름")
     st.dataframe(pd.DataFrame(build_data_source_logic(A)), width="stretch", hide_index=True)
 
