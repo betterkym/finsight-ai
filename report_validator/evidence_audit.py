@@ -100,7 +100,7 @@ def build_score_audit(analysis: dict) -> list[dict]:
                 f"발행 후 {timeline.get('elapsed')}일, "
                 f"발행 이후 수익률 {_pct(timeline.get('realized'))}, "
                 f"목표가까지 남은 여력 {_pct(timeline.get('remaining'))}, "
-                f"외국인 누적 순매수 {_signed_eok(timeline.get('foreign_net'))}."
+                f"{timeline.get('supply_basis') or '외국인 누적 순매수 ' + _signed_eok(timeline.get('foreign_net'))}."
             ),
             "판정 로직": axes["time"].get("reason", ""),
         },
@@ -243,7 +243,7 @@ def build_source_audit(analysis: dict) -> list[dict]:
         {
             "자료": "주가·수급",
             "출처": "KRX/pykrx 및 현재가 수집값",
-            "확인값": f"발행일 주가 {_won(timeline.get('price_at_pub'))}, 현재가 {_won(company.get('current_price'))}, 외국인 {_signed_eok(timeline.get('foreign_net'))}",
+            "확인값": f"발행일 주가 {_won(timeline.get('price_at_pub'))}, 현재가 {_won(company.get('current_price'))}, {timeline.get('supply_basis') or '외국인 ' + _signed_eok(timeline.get('foreign_net'))}",
             "점수 연결": "발행 이후 괴리 30점과 주가 괴리 해석에 사용합니다.",
         },
         {

@@ -53,7 +53,7 @@ def score_time(timeline: dict) -> dict:
         deductions.append(f"발행 {timeline['elapsed']}일 경과")
     if timeline["supply_gap"]:
         base -= 10
-        deductions.append(f"외국인 {timeline['foreign_net']:+}억 순매도(리포트와 반대)")
+        deductions.append(timeline.get("supply_basis") or f"외국인 {timeline['foreign_net']:+}억원 순매도")
     if timeline["soak_pct"] > 70:
         base -= 5
         deductions.append(f"상승여력 {timeline['soak_pct']}% 이미 소진")

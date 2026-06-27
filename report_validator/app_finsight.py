@@ -40,7 +40,7 @@ from report_validator.finsight_modules import (
 from core.mode_views import build_tracker_table, build_peer_benchmark
 from core import data_collector as dc
 from analyst_workbench.interpretation import interpret_price_action
-from report_validator.timeline_module import build_post_publish_timeline, fetch_foreign_net, fetch_price_at_date
+from report_validator.timeline_module import build_post_publish_timeline, fetch_foreign_flow, fetch_price_at_date
 from report_validator.scoring_module import build_report_verdict
 from report_validator.report_assessor import build_alignment_assessment, apply_alignment_to_verdict
 from report_validator.retail_report import generate_retail_html_report, generate_retail_pdf_report
@@ -622,9 +622,10 @@ def _objective_theme_read(theme: str, analysis: dict) -> str:
         if cfo_margin is not None or fcf_margin is not None:
             return f"CFO 마진 {_fmt_pct(cfo_margin)}, FCF(잉여현금흐름) 마진 {_fmt_pct(fcf_margin)}입니다. 이익이 현금으로 바뀌는지 확인해야 합니다."
     if theme == "주가·수급":
-        foreign_net = _num(timeline.get("foreign_net"))
-        foreign_text = "N/A" if foreign_net is None else f"{foreign_net:+,.0f}억원"
-        return f"발행 이후 수익률 {_fmt_pct(timeline.get('realized'))}, 외국인 누적 순매수 {foreign_text}입니다. 리포트 방향과 가격 반응을 분리해서 봐야 합니다."
+        return timeline.get("supply_read") or (
+            f"발행 이후 수익률 {_fmt_pct(timeline.get('realized'))}입니다. "
+            "리포트 방향과 가격·수급 반응을 분리해서 봐야 합니다."
+        )
     if theme == "해외·수출":
         disclosures = len((analysis.get("context") or {}).get("disclosures", []) or [])
         news = len((analysis.get("context") or {}).get("news", []) or [])
@@ -2001,8 +2002,8 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         stock_code = real["stock_code"]
         comp_name = real["company_name"]
         is_demo = False
-        # 발행일 외국인 순매수(억) — pykrx, 실패 시 None
-        foreign_net = fetch_foreign_net(stock_code, report_date)
+        # 발행일 이후 외국인 수급 — 기간·일평균·최근 흐름까지 함께 보관
+        foreign_flow = fetch_foreign_flow(stock_code, report_date)
         # 발행일 주가 — pykrx 자동 조회, 실패 시 현재가로 폴백
         price_at_pub = fetch_price_at_date(stock_code, report_date) or price
         context = fetch_report_context(comp_name, stock_code)
@@ -2017,7 +2018,18 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         comp_name = company_name or D.DEMO_COMPANY["name"]
         comp_code = D.DEMO_COMPANY["code"]
         is_demo = True
-        foreign_net = D.DEMO_FOREIGN_NET_EOK
+        foreign_flow = {
+            "net_eok": D.DEMO_FOREIGN_NET_EOK,
+            "start": report_date,
+            "end": datetime.date.today().isoformat(),
+            "trading_days": None,
+            "avg_daily_eok": None,
+            "recent_5d_eok": None,
+            "buy_days": None,
+            "sell_days": None,
+            "source": "데모 보조 수급값",
+            "available": True,
+        }
         post_events = D.DEMO_POST_EVENTS
         price_at_pub = 420000
         context = {"disclosures": [], "ownership": [], "news": [], "blogs": [], "market": {}, "external_drivers": {}, "errors": []}
@@ -2069,7 +2081,7 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         },
         current_price=price,
         post_events=post_events,
-        foreign_net_fallback=foreign_net,
+        foreign_flow_fallback=foreign_flow,
     )
     batch_timeline = build_batch_post_publish_analysis(
         report_batch or [],
@@ -2716,11 +2728,11 @@ with tab2:
         "해석",
         "리포트는 발행일 정보로 쓰인 문서입니다. 이후 가격 차이는 실적 훼손, 기대감 선반영, 수급 부담, 성장 이벤트 지연으로 나눠 신뢰도에 반영합니다.",
         f"반영: {V['axes']['time']['reason']}",
-        price_basis or f"발행 {tl['elapsed']}일 / 외국인 {tl.get('foreign_net', 0):+,}억원",
+        price_basis or tl.get("supply_basis") or f"발행 {tl['elapsed']}일",
     )
     st.markdown("---")
     if tl.get("supply_gap"):
-        st.warning(f"외국인 순매도: {abs(tl.get('foreign_net', 0)):,}억원 (매수 의견과 괴리)")
+        st.warning(tl.get("supply_read") or "매수 의견 이후 수급이 반대로 움직였습니다.")
     price_action = A.get("price_action") or {}
     price_rows = build_price_gap_read(price_action)
     if price_action:

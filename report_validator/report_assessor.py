@@ -324,8 +324,8 @@ def build_alignment_assessment(
         add(
             "발행 후 수급 괴리",
             "신뢰도 차감",
-            "리포트는 매수 의견인데 발행 이후 외국인 순매도가 누적됐습니다. 리포트 결론이 시장 행동과 엇갈린 부분입니다.",
-            f"외국인 {timeline.get('foreign_net', 0):+,}억원",
+            timeline.get("supply_read") or "리포트는 매수 의견인데 발행 이후 외국인 순매도가 누적됐습니다. 리포트 결론이 시장 행동과 엇갈린 부분입니다.",
+            timeline.get("supply_basis") or f"외국인 {timeline.get('foreign_net', 0):+,}억원",
             0,
             "Market",
         )

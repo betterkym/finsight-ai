@@ -179,8 +179,8 @@ def _issue_read(analysis: dict) -> list[dict]:
         rows.append({
             "title": "수급",
             "verdict": "리포트 의견과 반대 방향",
-            "read": "매수 의견 이후 외국인 순매도가 누적됐습니다. 실적이 좋아도 주가 반영이 늦어질 수 있는 신호입니다.",
-            "evidence": f"외국인 {_int_text(timeline.get('foreign_net'), '억원')}",
+            "read": timeline.get("supply_read") or "매수 의견 이후 외국인 순매도가 누적됐습니다. 실적이 좋아도 주가 반영이 늦어질 수 있는 신호입니다.",
+            "evidence": timeline.get("supply_basis") or f"외국인 {_int_text(timeline.get('foreign_net'), '억원')}",
         })
     return rows[:5]
 
@@ -234,7 +234,7 @@ def build_retail_report_model(analysis: dict) -> dict:
             {
                 "axis": "발행 이후 괴리",
                 "result": "수급 괴리" if timeline.get("supply_gap") else "큰 괴리 제한",
-                "read": f"발행 {_int_text(timeline.get('elapsed'), '일')} 경과, 여력 {_f(timeline.get('soak_pct'), '%')} 소진, 외국인 {_int_text(timeline.get('foreign_net'), '억원')}입니다.",
+                "read": timeline.get("supply_read") or f"발행 {_int_text(timeline.get('elapsed'), '일')} 경과, 여력 {_f(timeline.get('soak_pct'), '%')} 소진입니다.",
                 "score": verdict["axes"]["time"],
             },
             {
