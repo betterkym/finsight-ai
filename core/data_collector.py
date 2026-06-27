@@ -16,8 +16,11 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-# core/data_collector.py 기준으로 프로젝트 루트의 .env를 로드
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# core/data_collector.py 기준으로 프로젝트 루트의 .env를 로드 (없으면 무시)
+try:
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except Exception:
+    pass
 
 DART_API_KEY = os.getenv("DART_API_KEY", "")
 ECOS_API_KEY = os.getenv("ECOS_API_KEY", "")
