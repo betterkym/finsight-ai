@@ -90,7 +90,13 @@ def search_company_and_consensus(company_name: str) -> dict:
 
     company_name = company_name.strip()
 
-    info = dc.resolve_company(company_name)
+    try:
+        info = dc.resolve_company(company_name)
+    except (ValueError, RuntimeError):
+        # DART API 키 없으면 demo로 폴백
+        return {"success": False, "company_name": company_name, "stock_code": None,
+                "consensus": None, "message": f"'{company_name}'의 데이터를 찾을 수 없습니다. 농심 데모로 확인해보세요."}
+
     code = info.get("stock_code") if info else None
     resolved_name = info.get("company") if info else company_name
 
