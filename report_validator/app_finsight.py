@@ -1343,21 +1343,18 @@ if st.sidebar.button("🔍 검색", use_container_width=True) and company_search
 
 search_result = st.session_state.get("search_result")
 
-if search_result:
-    if search_result["success"]:
-        selected_company = search_result["company_name"]
-        consensus = search_result["consensus"]
-        stock_code = search_result.get("stock_code")
-        mean = consensus["price_target_mean"]
-        st.sidebar.success(
-            f"**{selected_company}**\n\n"
-            f"증권사 목표가 평균 **{mean:,.0f}원**\n\n"
-            f"투자의견 {consensus['opinion_label']} · {consensus['create_date']}"
-        )
+if search_result and search_result["success"]:
+    selected_company = search_result["company_name"]
+    consensus = search_result["consensus"]
+    stock_code = search_result.get("stock_code")
+    mean = consensus["price_target_mean"]
+    st.sidebar.success(
+        f"**{selected_company}**\n\n"
+        f"증권사 목표가 평균 **{mean:,.0f}원**\n\n"
+        f"투자의견 {consensus['opinion_label']} · {consensus['create_date']}"
+    )
 
-        st.sidebar.markdown("**2️⃣ 검증할 리포트**")
-    else:
-        st.sidebar.warning(f"⚠️ {search_result.get('message', '검색 실패')}\n\n**농심**을 검색해보세요!")
+    st.sidebar.markdown("**2️⃣ 검증할 리포트**")
     reports = fetch_research_list(stock_code)
     selected_naver_report = None
     research_list_url = (
