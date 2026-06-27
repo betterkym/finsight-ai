@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -34,8 +35,15 @@ def _clean(value):
     return value
 
 
-def _ensure_runtime() -> None:
-    if not NODE_BIN.exists() or not MODULES.joinpath("@oai", "artifact-tool").exists():
+def _node_command() -> str | None:
+    if NODE_BIN.exists():
+        return str(NODE_BIN)
+    return shutil.which("node")
+
+
+def _ensure_runtime() -> str:
+    node = _node_command()
+    if not node or not MODULES.joinpath("@oai", "artifact-tool").exists():
         raise RuntimeError("Excel artifact runtime을 찾을 수 없습니다.")
     RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
     link = RUNTIME_ROOT / "node_modules"
@@ -43,6 +51,39 @@ def _ensure_runtime() -> None:
         link.unlink()
     if not link.exists():
         link.symlink_to(MODULES, target_is_directory=True)
+    return node
+
+
+def _sheet_frame(value) -> pd.DataFrame:
+    cleaned = _clean(value)
+    if isinstance(cleaned, list):
+        return pd.DataFrame(cleaned)
+    if isinstance(cleaned, dict):
+        return pd.DataFrame([cleaned])
+    return pd.DataFrame([{"value": cleaned}])
+
+
+def _fallback_excel(payload: dict) -> bytes:
+    """Build a compact workbook when the local artifact runtime is unavailable."""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        summary_rows = [
+            {"항목": "회사", "값": payload.get("company")},
+            {"항목": "기준 기간", "값": payload.get("asOf")},
+            {"항목": "모델 상태", "값": payload.get("modelStatus")},
+            {"항목": "예상 시작연도", "값": payload.get("forecastStart")},
+            {"항목": "LTM 매출(억원)", "값": payload.get("ltmRevenue")},
+        ]
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
+        _sheet_frame(payload.get("quarterly", [])).to_excel(writer, sheet_name="Quarterly", index=False)
+        _sheet_frame(payload.get("scan", [])).to_excel(writer, sheet_name="Signals", index=False)
+        _sheet_frame(payload.get("quality", [])).to_excel(writer, sheet_name="Quality", index=False)
+        _sheet_frame(payload.get("recommendations", {})).to_excel(writer, sheet_name="Assumptions", index=False)
+        _sheet_frame(payload.get("multipleValuation", [])).to_excel(writer, sheet_name="Multiples", index=False)
+        _sheet_frame(payload.get("peerBenchmark", [])).to_excel(writer, sheet_name="Peers", index=False)
+        _sheet_frame(payload.get("dcfEvidence", [])).to_excel(writer, sheet_name="DCF Evidence", index=False)
+        _sheet_frame(payload.get("trackerCommentary", [])).to_excel(writer, sheet_name="Tracker Notes", index=False)
+    return output.getvalue()
 
 
 def export_excel(
@@ -70,7 +111,6 @@ def export_excel(
     tracker_commentary: list[dict] | None = None,
 ) -> bytes:
     """Build an eight-sheet, source-backed analyst workbook and return XLSX bytes."""
-    _ensure_runtime()
     latest = kpis.iloc[-1]
     core_quality = [item for item in quality_checks if item["field"] in {"매출액", "영업이익", "영업활동현금흐름"}]
     model_status = "PASS" if all(item["missing_quarters"] == 0 for item in core_quality) else "REVIEW"
@@ -108,13 +148,19 @@ def export_excel(
         "contextCount": sum(len(item.get("context", [])) for item in (scan or [])),
         "modelStatus": model_status,
     }
+
+    try:
+        node = _ensure_runtime()
+    except RuntimeError:
+        return _fallback_excel(payload)
+
     with tempfile.TemporaryDirectory(dir=RUNTIME_ROOT) as tmp:
         work = Path(tmp)
         shutil.copy2(BUILDER, work / "build_workbook.mjs")
         input_path, output_path = work / "input.json", work / "workbook.xlsx"
         input_path.write_text(json.dumps(_clean(payload), ensure_ascii=False), encoding="utf-8")
         result = subprocess.run(
-            [str(NODE_BIN), str(work / "build_workbook.mjs"), str(input_path), str(output_path)],
+            [node, str(work / "build_workbook.mjs"), str(input_path), str(output_path)],
             cwd=work, capture_output=True, text=True, timeout=60,
         )
         if result.returncode != 0 or not output_path.exists():

@@ -37,6 +37,20 @@ def _pct(value) -> str:
     return f"{number:+.1f}%"
 
 
+def _signed_eok(value) -> str:
+    number = _num(value)
+    if number is None:
+        return "N/A"
+    return f"{number:+,.0f}억원"
+
+
+def _shares(value) -> str:
+    number = _num(value)
+    if number is None:
+        return "N/A"
+    return f"{number:,.0f}주"
+
+
 def _score_label(axis: dict) -> str:
     if axis.get("uncounted"):
         return "미집계"
@@ -86,7 +100,7 @@ def build_score_audit(analysis: dict) -> list[dict]:
                 f"발행 후 {timeline.get('elapsed')}일, "
                 f"발행 이후 수익률 {_pct(timeline.get('realized'))}, "
                 f"목표가까지 남은 여력 {_pct(timeline.get('remaining'))}, "
-                f"외국인 누적 순매수 {timeline.get('foreign_net', 0):+,}억원."
+                f"외국인 누적 순매수 {_signed_eok(timeline.get('foreign_net'))}."
             ),
             "판정 로직": axes["time"].get("reason", ""),
         },
@@ -223,13 +237,13 @@ def build_source_audit(analysis: dict) -> list[dict]:
         {
             "자료": "DART 재무",
             "출처": "OpenDART 분기 재무제표",
-            "확인값": f"최근 분기 {latest_period}, 발행주식수 {company.get('shares_outstanding', 0):,.0f}주",
+            "확인값": f"최근 분기 {latest_period}, 발행주식수 {_shares(company.get('shares_outstanding'))}",
             "점수 연결": "EPS 역산, 재무 이상징후, 현금 전환 평가에 사용합니다.",
         },
         {
             "자료": "주가·수급",
             "출처": "KRX/pykrx 및 현재가 수집값",
-            "확인값": f"발행일 주가 {_won(timeline.get('price_at_pub'))}, 현재가 {_won(company.get('current_price'))}, 외국인 {timeline.get('foreign_net', 0):+,}억원",
+            "확인값": f"발행일 주가 {_won(timeline.get('price_at_pub'))}, 현재가 {_won(company.get('current_price'))}, 외국인 {_signed_eok(timeline.get('foreign_net'))}",
             "점수 연결": "발행 이후 괴리 30점과 주가 괴리 해석에 사용합니다.",
         },
         {
@@ -357,7 +371,7 @@ def build_update_audit(analysis: dict) -> list[dict]:
         rows.append({
             "평가 구분": "발행 후 업데이트",
             "항목": f"{event.get('date', '')} · {event.get('type', '')}",
-            "판단": "리포트 발행 이후 확인된 항목입니다. 목표가·의견이 여전히 유효한지 최신화해야 합니다.",
+            "판단": event.get("impact") or "리포트 발행 이후 확인된 항목입니다. 목표가·의견이 여전히 유효한지 최신화해야 합니다.",
             "근거": event.get("detail", ""),
             "점수 영향": "발행 이후 괴리 근거",
         })

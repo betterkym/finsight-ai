@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import contextlib
 import html
 import io
 import os
@@ -923,9 +924,10 @@ def get_krx_flow_snapshot(stock_code: str, days: int = 90) -> dict:
 
         end = dt.date.today()
         start = end - dt.timedelta(days=days)
-        frame = stock.get_market_trading_value_by_date(
-            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), stock_code, detail=True
-        )
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            frame = stock.get_market_trading_value_by_date(
+                start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), stock_code, detail=True
+            )
         if frame is None or frame.empty:
             return {"connected": False, "source": "KRX/pykrx", "reason": "수급 데이터 없음", "status_rows": []}
         numeric = frame.apply(pd.to_numeric, errors="coerce")

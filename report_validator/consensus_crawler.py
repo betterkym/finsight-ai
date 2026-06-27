@@ -10,6 +10,9 @@
 from __future__ import annotations
 
 import sys
+import contextlib
+import io
+import re
 from pathlib import Path
 from urllib.parse import urljoin
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -27,6 +30,96 @@ _HEADERS = {
 }
 _NAVER_API = "https://m.stock.naver.com/api/stock/{code}/integration"
 _NAVER_RESEARCH = "https://finance.naver.com/research/company_list.naver"
+
+_COMMON_LISTED_COMPANIES = {
+    "삼성전자": ("삼성전자", "005930"),
+    "sk하이닉스": ("SK하이닉스", "000660"),
+    "에스케이하이닉스": ("SK하이닉스", "000660"),
+    "네이버": ("NAVER", "035420"),
+    "naver": ("NAVER", "035420"),
+    "카카오": ("카카오", "035720"),
+    "kakao": ("카카오", "035720"),
+    "카카오뱅크": ("카카오뱅크", "323410"),
+    "카카오페이": ("카카오페이", "377300"),
+    "농심": ("농심", "004370"),
+    "에이피알": ("에이피알", "278470"),
+    "apr": ("에이피알", "278470"),
+    "현대차": ("현대자동차", "005380"),
+    "현대자동차": ("현대자동차", "005380"),
+    "기아": ("기아", "000270"),
+    "lg전자": ("LG전자", "066570"),
+    "엘지전자": ("LG전자", "066570"),
+    "lg화학": ("LG화학", "051910"),
+    "lg에너지솔루션": ("LG에너지솔루션", "373220"),
+    "삼성sdi": ("삼성SDI", "006400"),
+    "삼성바이오로직스": ("삼성바이오로직스", "207940"),
+    "셀트리온": ("셀트리온", "068270"),
+    "포스코홀딩스": ("POSCO홀딩스", "005490"),
+    "posco홀딩스": ("POSCO홀딩스", "005490"),
+    "kb금융": ("KB금융", "105560"),
+    "신한지주": ("신한지주", "055550"),
+    "현대모비스": ("현대모비스", "012330"),
+}
+
+
+def _normalize_company_query(value: str) -> str:
+    raw = re.sub(r"\s+", "", str(value or "")).lower()
+    raw = raw.replace("(주)", "").replace("주식회사", "")
+    aliases = {
+        "엘지": "lg",
+        "에스케이": "sk",
+        "케이비": "kb",
+        "포스코": "posco",
+    }
+    for src, dst in aliases.items():
+        raw = raw.replace(src, dst)
+    return raw
+
+
+def _resolve_company_for_search(company_name: str) -> tuple[str, str, str]:
+    """Resolve listed company name for the search step without depending only on DART."""
+    if company_name.isdigit() and len(company_name) == 6:
+        return company_name, company_name, "사용자 입력 종목코드"
+
+    try:
+        info = dc.resolve_company(company_name)
+        code = (info or {}).get("stock_code")
+        resolved = (info or {}).get("company") or company_name
+        if code:
+            return resolved, code, "DART"
+    except (ValueError, RuntimeError):
+        pass
+
+    normalized = _normalize_company_query(company_name)
+    if normalized in _COMMON_LISTED_COMPANIES:
+        resolved, code = _COMMON_LISTED_COMPANIES[normalized]
+        return resolved, code, "기본 상장사 매핑"
+
+    try:
+        from pykrx import stock
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            tickers = stock.get_market_ticker_list(market="ALL")
+        matches: list[tuple[int, str, str]] = []
+        for ticker in tickers:
+            try:
+                name = stock.get_market_ticker_name(ticker)
+            except Exception:
+                continue
+            name_norm = _normalize_company_query(name)
+            if not name_norm:
+                continue
+            if normalized == name_norm:
+                return name, ticker, "KRX"
+            if normalized in name_norm or name_norm in normalized:
+                matches.append((abs(len(name_norm) - len(normalized)), name, ticker))
+        if matches:
+            _gap, name, ticker = sorted(matches)[0]
+            return name, ticker, "KRX"
+    except Exception:
+        pass
+
+    raise ValueError(f"'{company_name}'의 상장 종목코드를 찾지 못했습니다.")
 
 
 def _recomm_label(recomm_mean: float) -> str:
@@ -91,14 +184,11 @@ def search_company_and_consensus(company_name: str) -> dict:
     company_name = company_name.strip()
 
     try:
-        info = dc.resolve_company(company_name)
-    except (ValueError, RuntimeError):
-        # DART API 키 없으면 demo로 폴백
+        resolved_name, code, source = _resolve_company_for_search(company_name)
+    except ValueError:
         return {"success": False, "company_name": company_name, "stock_code": None,
-                "consensus": None, "message": f"'{company_name}'의 데이터를 찾을 수 없습니다. 농심 데모로 확인해보세요."}
-
-    code = info.get("stock_code") if info else None
-    resolved_name = info.get("company") if info else company_name
+                "consensus": None,
+                "message": f"'{company_name}'의 상장 종목코드를 찾지 못했습니다. 종목명이나 6자리 종목코드로 다시 검색하세요."}
 
     if not code:
         return {"success": False, "company_name": company_name, "stock_code": None,
@@ -107,18 +197,27 @@ def search_company_and_consensus(company_name: str) -> dict:
 
     consensus = fetch_naver_consensus(code)
     if not consensus:
-        return {"success": False, "company_name": resolved_name, "stock_code": code,
-                "consensus": None,
-                "message": f"{resolved_name}의 컨센서스 목표가가 없습니다 (커버리지 부족)."}
+        return {
+            "success": True,
+            "company_name": resolved_name,
+            "stock_code": code,
+            "consensus": {},
+            "source": source,
+            "message": (
+                f"{resolved_name} 종목코드 {code}는 확인했습니다. "
+                "증권사 목표가 평균은 확인하지 못했으니 PDF 업로드 또는 목표가 직접 입력으로 진행하세요."
+            ),
+        }
 
     return {
         "success": True,
         "company_name": resolved_name,
         "stock_code": code,
         "consensus": consensus,
+        "source": source,
         "message": (
             f"✅ {resolved_name} 컨센서스 평균 "
-            f"{consensus['price_target_mean']:,.0f}원 · {consensus['opinion_label']}"
+            f"{(consensus.get('price_target_mean') or 0):,.0f}원 · {consensus.get('opinion_label', '확인 필요')}"
         ),
     }
 

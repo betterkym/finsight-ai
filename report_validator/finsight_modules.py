@@ -149,6 +149,132 @@ def reverse_engineer_target(
     }
 
 
+def reverse_engineer_target_lenient(
+    target_price: float,
+    kpis: pd.DataFrame,
+    shares_outstanding: float,
+    current_price: float,
+    reason: str = "",
+) -> dict:
+    """Build a best-effort target reverse read without switching to demo data.
+
+    Some companies have usable DART quarterly financials but not enough complete
+    fiscal-year EPS history for the stricter annual method. In that case the app
+    should keep the company's real DART data and mark only the EPS reverse check
+    as limited.
+    """
+    frame = kpis.copy() if kpis is not None else pd.DataFrame()
+    shares = float(shares_outstanding or 0)
+    if shares <= 0:
+        return {
+            "target_price": target_price,
+            "current_price": current_price,
+            "current_eps": 0,
+            "need_eps": 0,
+            "current_per": None,
+            "need_growth": 999.0,
+            "avg_growth": 0.0,
+            "median_growth": 0.0,
+            "cv": 99.0,
+            "volatility": "매우높음",
+            "reference_growth": 0.0,
+            "multiple": None,
+            "verdict": "확인 필요",
+            "growth_history": [0.0],
+            "growth_labels": ["발행주식수 미확인"],
+            "limited": True,
+            "limited_reason": "발행주식수를 확인하지 못해 EPS 역산을 제한했습니다.",
+            "method": "발행주식수 확인 필요",
+        }
+
+    if frame.empty or "net_income" not in frame:
+        current_eps = 0.0
+    else:
+        net_income = pd.to_numeric(frame["net_income"], errors="coerce").dropna()
+        if len(net_income) >= 4:
+            current_eps = float(net_income.tail(4).sum()) / shares
+        elif len(net_income):
+            current_eps = float(net_income.iloc[-1]) * 4 / shares
+        else:
+            current_eps = 0.0
+
+    current_per = current_price / current_eps if current_eps and current_eps > 0 else None
+    need_eps = target_price / current_per if current_per else None
+    need_growth = (need_eps / current_eps - 1) * 100 if need_eps and current_eps > 0 else 999.0
+
+    growths: list[float] = []
+    growth_labels: list[str] = []
+    if "net_income_yoy" in frame:
+        yoy = pd.to_numeric(frame["net_income_yoy"], errors="coerce").dropna().tail(8)
+        growths = [float(value) for value in yoy.tolist()]
+        periods = frame.loc[yoy.index, "period"].astype(str).tolist() if "period" in frame else []
+        growth_labels = periods or [f"최근 {idx + 1}" for idx in range(len(growths))]
+
+    if not growths:
+        annual = annualize_quarters(frame) if not frame.empty else pd.DataFrame()
+        if not annual.empty and "net_income" in annual:
+            eps = (pd.to_numeric(annual["net_income"], errors="coerce") / shares).dropna().tolist()
+            years = annual.loc[annual["net_income"].notna(), "year"].astype(int).tolist()
+            growths = [
+                (eps[idx] / eps[idx - 1] - 1) * 100
+                for idx in range(1, len(eps))
+                if eps[idx - 1] > 0
+            ]
+            growth_labels = [
+                f"{years[idx - 1]}→{years[idx]}"
+                for idx in range(1, len(eps))
+                if eps[idx - 1] > 0 and idx < len(years)
+            ]
+
+    if not growths:
+        growths = [0.0]
+        growth_labels = ["최근 실적 기준"]
+
+    avg = statistics.mean(growths)
+    median = statistics.median(growths)
+    std = statistics.pstdev(growths) if len(growths) > 1 else 0.0
+    cv = std / abs(avg) if avg else float("inf")
+    reference = median if cv > 0.8 else avg
+
+    if current_eps <= 0:
+        verdict = "과도한 낙관"
+        multiple = None
+        volatility = "매우높음"
+    elif need_growth > max(growths):
+        verdict = "과도한 낙관"
+        multiple = round(need_growth / reference, 1) if reference else None
+        volatility = "매우높음" if cv > 1.5 else ("높음" if cv > 0.8 else "양호")
+    elif need_growth > reference:
+        verdict = "낙관"
+        multiple = round(need_growth / reference, 1) if reference else None
+        volatility = "높음" if cv > 0.8 else "양호"
+    else:
+        verdict = "현실적"
+        multiple = round(need_growth / reference, 1) if reference else None
+        volatility = "높음" if cv > 0.8 else "양호"
+
+    return {
+        "target_price": target_price,
+        "current_price": current_price,
+        "current_eps": round(current_eps),
+        "need_eps": round(need_eps) if need_eps is not None else 0,
+        "current_per": round(current_per, 1) if current_per else None,
+        "need_growth": round(need_growth, 1),
+        "avg_growth": round(avg, 1),
+        "median_growth": round(median, 1),
+        "cv": round(cv, 1) if cv != float("inf") else 99.0,
+        "volatility": volatility,
+        "reference_growth": round(reference, 1),
+        "multiple": multiple,
+        "verdict": verdict,
+        "growth_history": [round(g, 1) for g in growths],
+        "growth_labels": growth_labels[:len(growths)],
+        "limited": True,
+        "limited_reason": reason or "완전연도 EPS 이력이 부족해 최근 분기 기준으로 보조 계산했습니다.",
+        "method": "최근 4개 분기 기준 보조 역산",
+    }
+
+
 def aggregate_opinions(broker_targets: list[dict]) -> dict:
     """증권사 투자의견(매수/중립/매도) 집계. (모듈1 보조)"""
     counter = Counter(str(t.get("opinion", "매수")) for t in broker_targets)

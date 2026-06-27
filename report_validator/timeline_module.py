@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+import io
 from datetime import datetime
 
 
@@ -22,7 +24,8 @@ def fetch_price_at_date(stock_code: str, ymd: str) -> float | None:
         from pykrx import stock
 
         yyyymmdd = ymd.replace("-", "")
-        df = stock.get_market_ohlcv(yyyymmdd, yyyymmdd, stock_code)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            df = stock.get_market_ohlcv(yyyymmdd, yyyymmdd, stock_code)
         if not df.empty:
             return float(df.iloc[0]["종가"])
     except Exception:
@@ -37,7 +40,8 @@ def fetch_foreign_net(stock_code: str, pub_date: str) -> int | None:
 
         start = pub_date.replace("-", "")
         end = datetime.now().strftime("%Y%m%d")
-        df = stock.get_market_trading_value_by_date(start, end, stock_code)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            df = stock.get_market_trading_value_by_date(start, end, stock_code)
         for col in ("외국인", "외국인합계"):
             if col in df.columns:
                 return int(df[col].sum() / 1e8)

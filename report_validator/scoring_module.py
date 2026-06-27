@@ -64,6 +64,13 @@ def score_time(timeline: dict) -> dict:
 
 def score_logic(reverse: dict) -> dict:
     """필요 실적 점수 (40점)."""
+    if reverse.get("verdict") == "확인 필요":
+        return {
+            "score": None,
+            "max": 40,
+            "reason": reverse.get("limited_reason") or "필요 실적 계산에 필요한 데이터가 부족해 미집계",
+            "uncounted": True,
+        }
     mult = reverse["multiple"] if reverse["multiple"] else 1
     verdict = reverse["verdict"]
     if verdict == "현실적":
@@ -120,8 +127,10 @@ def build_report_verdict(
     weak_candidates = []
     if not sp.get("uncounted"):
         weak_candidates.append(("분포에서 혼자 튀는 점", sp["score"] / sp["max"]))
-    weak_candidates.append(("리포트 발행 이후 현실과 벌어진 점", tm["score"] / tm["max"]))
-    weak_candidates.append(("목표가에 필요한 실적이 부담스러운 점", lg["score"] / lg["max"]))
+    if not tm.get("uncounted"):
+        weak_candidates.append(("리포트 발행 이후 현실과 벌어진 점", tm["score"] / tm["max"]))
+    if not lg.get("uncounted"):
+        weak_candidates.append(("목표가에 필요한 실적이 부담스러운 점", lg["score"] / lg["max"]))
     weakest = min(weak_candidates, key=lambda x: x[1])[0] if weak_candidates else "불명확한 점"
 
     broker = report.get("broker", "이 증권사")

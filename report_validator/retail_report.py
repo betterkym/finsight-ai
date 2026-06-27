@@ -32,6 +32,20 @@ def _f(value, suffix: str = "", digits: int = 1) -> str:
     return f"{number:,.{digits}f}{suffix}"
 
 
+def _won(value) -> str:
+    number = _num(value)
+    if number is None:
+        return "N/A"
+    return f"{number:,.0f}원"
+
+
+def _int_text(value, suffix: str = "") -> str:
+    number = _num(value)
+    if number is None:
+        return "N/A"
+    return f"{number:,.0f}{suffix}"
+
+
 def _e(value) -> str:
     return html.escape(str(value if value is not None else ""))
 
@@ -166,7 +180,7 @@ def _issue_read(analysis: dict) -> list[dict]:
             "title": "수급",
             "verdict": "리포트 의견과 반대 방향",
             "read": "매수 의견 이후 외국인 순매도가 누적됐습니다. 실적이 좋아도 주가 반영이 늦어질 수 있는 신호입니다.",
-            "evidence": f"외국인 {timeline.get('foreign_net', 0):+,}억원",
+            "evidence": f"외국인 {_int_text(timeline.get('foreign_net'), '억원')}",
         })
     return rows[:5]
 
@@ -182,17 +196,18 @@ def build_retail_report_model(analysis: dict) -> dict:
     weak = verdict.get("weakest", "")
     broker = report.get("broker") or "이 리포트"
     target = report.get("target_price", 0)
+    target_text = _won(target)
     alignment = verdict.get("alignment") or {}
     lead = (alignment.get("factors") or [{}])[0]
     lead_title = lead.get("title") or weak or "추가 부담"
     if verdict["total"] >= 75:
-        summary = f"{broker}의 목표가 {target:,.0f}원은 현재 FinSight 분석과 크게 충돌하지 않습니다. 신뢰도는 높게 볼 수 있습니다."
+        summary = f"{broker}의 목표가 {target_text}은 현재 FinSight 분석과 크게 충돌하지 않습니다. 신뢰도는 높게 볼 수 있습니다."
     elif verdict["total"] >= 60:
-        summary = f"{broker}의 목표가 {target:,.0f}원은 참고할 만하지만, {lead_title} 때문에 그대로 확신하기는 어렵습니다."
+        summary = f"{broker}의 목표가 {target_text}은 참고할 만하지만, {lead_title} 때문에 그대로 확신하기는 어렵습니다."
     elif verdict["total"] >= 45:
-        summary = f"{broker}의 목표가 {target:,.0f}원은 주의해서 봐야 합니다. FinSight 분석에서는 {lead_title}이 리포트 신뢰도를 낮췄습니다."
+        summary = f"{broker}의 목표가 {target_text}은 주의해서 봐야 합니다. FinSight 분석에서는 {lead_title}이 리포트 신뢰도를 낮췄습니다."
     else:
-        summary = f"{broker}의 목표가 {target:,.0f}원은 그대로 믿기 어렵습니다. {lead_title}이 충분히 반영되지 않은 것으로 보입니다."
+        summary = f"{broker}의 목표가 {target_text}은 그대로 믿기 어렵습니다. {lead_title}이 충분히 반영되지 않은 것으로 보입니다."
 
     content_assessment = analysis.get("report_content_assessment") or {}
     if content_assessment.get("penalty"):
@@ -213,13 +228,13 @@ def build_retail_report_model(analysis: dict) -> dict:
             {
                 "axis": "목표가 편차",
                 "result": dist.get("position"),
-                "read": f"증권사 목표가 평균 {dist.get('mean', 0):,.0f}원 대비 {dist.get('vs_median_pct', 0):+.1f}%입니다.",
+                "read": f"증권사 목표가 평균 {_won(dist.get('mean'))} 대비 {_f(dist.get('vs_median_pct'), '%')}입니다.",
                 "score": verdict["axes"]["space"],
             },
             {
                 "axis": "발행 이후 괴리",
                 "result": "수급 괴리" if timeline.get("supply_gap") else "큰 괴리 제한",
-                "read": f"발행 {timeline.get('elapsed')}일 경과, 여력 {timeline.get('soak_pct')}% 소진, 외국인 {timeline.get('foreign_net', 0):+,}억원입니다.",
+                "read": f"발행 {_int_text(timeline.get('elapsed'), '일')} 경과, 여력 {_f(timeline.get('soak_pct'), '%')} 소진, 외국인 {_int_text(timeline.get('foreign_net'), '억원')}입니다.",
                 "score": verdict["axes"]["time"],
             },
             {
@@ -296,6 +311,24 @@ def generate_retail_html_report(analysis: dict) -> str:
     )
     if not content_rows:
         content_rows = "<tr><td colspan='5'>PDF 본문을 읽지 못해 본문 의견 검증은 제외했습니다.</td></tr>"
+    briefing = (model.get("report_content") or {}).get("briefing") or {}
+    briefing_sections = []
+    for title, key in (
+        ("믿고 가져갈 내용", "trusted"),
+        ("아직 보수적으로 볼 내용", "watch"),
+        ("리포트끼리 갈리는 내용", "contested"),
+    ):
+        items = briefing.get(key) or []
+        if not items:
+            continue
+        lis = "".join(
+            f"<li><b>{_e(item.get('title'))}</b><p>{_e(item.get('read'))}</p><span>{_e(item.get('evidence'))}</span></li>"
+            for item in items[:3]
+        )
+        briefing_sections.append(f"<h3>{_e(title)}</h3><ul>{lis}</ul>")
+    briefing_html = ""
+    if briefing.get("headline"):
+        briefing_html = f"<div class='briefing'><p>{_e(briefing.get('headline'))}</p>{''.join(briefing_sections)}</div>"
     update_audit = "".join(
         "<tr>"
         f"<td>{_e(row['평가 구분'])}</td>"
@@ -331,6 +364,9 @@ def generate_retail_html_report(analysis: dict) -> str:
     .score b {{ font-size:54px; color:#173B57; line-height:1; }}
     .score span {{ font-size:20px; font-weight:800; }}
     .summary {{ background:#F3F6F9; border-left:4px solid #173B57; padding:16px 18px; line-height:1.7; }}
+    .briefing {{ background:#FAFBFC; border:1px solid #DCE2E8; padding:14px 16px; margin:12px 0 14px; }}
+    .briefing h3 {{ font-size:15px; margin:14px 0 4px; }}
+    .briefing p {{ line-height:1.65; margin:0 0 8px; }}
     table {{ width:100%; border-collapse:collapse; margin-top:12px; }}
     th, td {{ border-bottom:1px solid #E5EAF0; padding:11px 9px; text-align:left; vertical-align:top; font-size:14px; }}
     th {{ background:#F8FAFC; color:#364152; }}
@@ -345,7 +381,7 @@ def generate_retail_html_report(analysis: dict) -> str:
 <main>
   <div class="kicker">FinSight 리포트 신뢰도 검증</div>
   <h1>{_e(company['name'])} 목표가 검증</h1>
-  <div class="meta">{_e(report.get('broker') or '증권사 미입력')} · 발행일 {_e(report.get('pub_date'))} · 목표가 {report.get('target_price', 0):,}원 · 생성일 {model['as_of']}</div>
+  <div class="meta">{_e(report.get('broker') or '증권사 미입력')} · 발행일 {_e(report.get('pub_date'))} · 목표가 {_e(_won(report.get('target_price')))} · 생성일 {model['as_of']}</div>
   <div class="score"><b>{verdict['total']}</b><span>/100 · {verdict['grade']}등급</span></div>
   <div class="summary">{_e(model['summary'])}</div>
 
@@ -354,6 +390,7 @@ def generate_retail_html_report(analysis: dict) -> str:
 
   <h2>2. 본문 의견 검증</h2>
   <p>{_e((model.get('report_content') or {}).get('summary') or (model.get('report_content_assessment') or {}).get('reason') or 'PDF 본문 의견 검증 결과가 없습니다.')}</p>
+  {briefing_html}
   <table><thead><tr><th>논점</th><th>언급</th><th>리포트별 방향</th><th>실제 데이터 대조</th><th>판단</th></tr></thead><tbody>{content_rows}</tbody></table>
 
   <h2>3. 점수 산정 근거</h2>
@@ -425,7 +462,7 @@ def generate_retail_pdf_report(analysis: dict) -> bytes:
     verdict = model["verdict"]
     write("FinSight 리포트 신뢰도 검증", 11)
     write(f"{company['name']} 목표가 검증", 20, "B", 9)
-    write(f"{report.get('broker') or '증권사 미입력'} · 발행일 {report.get('pub_date')} · 목표가 {report.get('target_price', 0):,}원 · 생성일 {model['as_of']}", 10)
+    write(f"{report.get('broker') or '증권사 미입력'} · 발행일 {report.get('pub_date')} · 목표가 {_won(report.get('target_price'))} · 생성일 {model['as_of']}", 10)
     pdf.ln(2)
     write(f"신뢰도 {verdict['total']}/100 · {verdict['grade']}등급", 16, "B", 8)
     write(model["summary"], 11)
@@ -443,6 +480,20 @@ def generate_retail_pdf_report(analysis: dict) -> bytes:
     content_assessment = model.get("report_content_assessment") or {}
     content_summary = (model.get("report_content") or {}).get("summary") or content_assessment.get("reason") or "PDF 본문 의견 검증 결과가 없습니다."
     write(content_summary, 10)
+    briefing = (model.get("report_content") or {}).get("briefing") or {}
+    if briefing.get("headline"):
+        write(f"브리핑: {briefing.get('headline')}", 10, "B")
+        for title, key in (
+            ("믿고 가져갈 내용", "trusted"),
+            ("아직 보수적으로 볼 내용", "watch"),
+            ("리포트끼리 갈리는 내용", "contested"),
+        ):
+            items = briefing.get(key) or []
+            if not items:
+                continue
+            write(title, 10, "B")
+            for item in items[:3]:
+                write(f"- {item.get('title')}: {item.get('read')}", 9)
     for row in (model.get("report_content") or {}).get("theme_rows", [])[:8]:
         write(f"- {row.get('논점')} · {row.get('판정')} · {row.get('언급 리포트')}", 10, "B")
         write(f"리포트별 방향: {row.get('리포트 간 차이')}", 9)

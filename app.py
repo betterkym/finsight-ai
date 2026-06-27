@@ -68,7 +68,7 @@ with title_col:
     st.markdown("<div class='fs-title'>FinSight 리포트 신뢰도 검증</div>", unsafe_allow_html=True)
 with nav_col:
     st.markdown("<div class='fs-nav'>", unsafe_allow_html=True)
-    if st.button("Analyst Mode", use_container_width=True):
+    if st.button("Analyst Mode", width="stretch"):
         st.query_params["view"] = "analyst"
         st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
@@ -95,7 +95,7 @@ with col1:
         """,
         unsafe_allow_html=True,
     )
-    if st.button("Analyst Mode로 입장", type="primary", use_container_width=True):
+    if st.button("Analyst Mode로 입장", type="primary", width="stretch"):
         st.query_params["view"] = "analyst"
         st.rerun()
 
@@ -114,7 +114,7 @@ with col2:
         """,
         unsafe_allow_html=True,
     )
-    if st.button("개인투자자용으로 입장", use_container_width=True):
+    if st.button("개인투자자용으로 입장", width="stretch"):
         st.query_params["view"] = "retail"
         st.rerun()
 

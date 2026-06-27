@@ -13,6 +13,8 @@ from __future__ import annotations
 import sys
 import runpy
 import re
+import unicodedata
+import html
 from pathlib import Path
 from io import BytesIO
 from urllib.parse import quote
@@ -30,6 +32,7 @@ from core.diagnostics import (
 )
 from report_validator.finsight_modules import (
     reverse_engineer_target,
+    reverse_engineer_target_lenient,
     aggregate_opinions,
     locate_in_distribution,
     locate_vs_consensus,
@@ -78,40 +81,46 @@ if st.query_params.get("view") == "analyst":
 def fetch_real_financials(company_name: str) -> dict | None:
     """종목명으로 실제 DART 재무·현재가·발행주식수를 수집한다.
 
-    ③축 역산까지 성공해야 실데이터로 인정한다 (완전연도 EPS 부족 등은 폴백).
+    DART 재무가 수집되면 실데이터로 인정한다. 필요 실적 역산 가능 여부는
+    load_analysis에서 별도 처리한다.
     """
     try:
         info = dc.resolve_company(company_name)
         if not info or not info.get("stock_code"):
             return None
         fin = dc.get_quarterly_financials(company_name, quarters=24)
-        if fin is None or len(fin) < 12 or "period" not in fin.columns:
+        if fin is None or len(fin) < 4:
             return None
 
         code = info["stock_code"]
         price = dc.get_current_price(code)
-        last = fin["period"].iloc[-1]            # 예: '2026 1Q'
-        yr = int(last.split()[0])
-        q = int(last.split()[1].replace("Q", ""))
-        shares = dc.get_share_snapshot(company_name, yr, q).get("shares_outstanding")
-        if not price or not shares:
+        if not price:
             return None
-
-        # ③축 역산이 실제로 가능한지 검증 (완전연도 EPS 3개 이상)
-        kpis = calculate_quarterly_kpis(fin)
-        reverse_engineer_target(
-            target_price=price * 1.2,  # 검증용 임의 목표가
-            kpis=kpis,
-            shares_outstanding=shares,
-            current_price=price,
-        )
+        shares = None
+        try:
+            if {"year", "quarter"}.issubset(fin.columns):
+                clean_periods = fin.dropna(subset=["year", "quarter"])
+                latest = clean_periods.iloc[-1] if not clean_periods.empty else fin.iloc[-1]
+                yr = int(latest.get("year"))
+                q = int(latest.get("quarter"))
+            else:
+                period_text = str(fin.iloc[-1].get("period", ""))
+                match = re.search(r"(20\d{2}).*?([1-4])", period_text)
+                if not match:
+                    raise ValueError(f"분기 식별 실패: {period_text}")
+                yr, q = int(match.group(1)), int(match.group(2))
+            shares = dc.get_share_snapshot(info["company"], yr, q).get("shares_outstanding")
+        except Exception:
+            shares = None
 
         return {
             "company_name": info["company"],
             "stock_code": code,
             "financials": fin,
             "current_price": float(price),
-            "shares_outstanding": float(shares),
+            "shares_outstanding": float(shares or 0),
+            "financial_status": "실제 DART 재무",
+            "share_status": "DART 발행주식수 연결" if shares else "발행주식수 미확인",
         }
     except Exception:
         return None
@@ -168,37 +177,126 @@ def build_price_gap_read(price_action: dict) -> list[dict]:
     return rows[:4]
 
 
-def extract_report_pdf_text(file_bytes: bytes, max_pages: int = 6) -> tuple[str, str]:
+def _normalize_pdf_text(text: str) -> str:
+    """Clean common PDF extraction artifacts without changing the meaning."""
+    cleaned = unicodedata.normalize("NFKC", str(text or ""))
+    cleaned = cleaned.replace("\x00", " ").replace("\u200b", "")
+    cleaned = re.sub(r"([0-9])\s*,\s*([0-9]{3})", r"\1,\2", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _dedupe_text_blocks(blocks: list[str]) -> list[str]:
+    seen = set()
+    out = []
+    for block in blocks:
+        cleaned = _normalize_pdf_text(block)
+        if len(cleaned) < 20:
+            continue
+        key = re.sub(r"\s+", "", cleaned[:700])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+    return out
+
+
+def _extract_with_pypdf(file_bytes: bytes, max_pages: int) -> tuple[list[str], int | None]:
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        return [], None
+    try:
+        reader = PdfReader(BytesIO(file_bytes))
+        if getattr(reader, "is_encrypted", False):
+            try:
+                reader.decrypt("")
+            except Exception:
+                return [], len(reader.pages)
+        page_count = len(reader.pages)
+        blocks = []
+        for page in list(reader.pages)[:max_pages]:
+            for mode in ("layout", "plain"):
+                try:
+                    text = page.extract_text(extraction_mode=mode) or ""
+                except TypeError:
+                    text = page.extract_text() or ""
+                except Exception:
+                    text = ""
+                if text:
+                    blocks.append(text)
+        return blocks, page_count
+    except Exception:
+        return [], None
+
+
+def _extract_with_pdfplumber(file_bytes: bytes, max_pages: int) -> tuple[list[str], int | None]:
+    try:
+        import pdfplumber
+    except Exception:
+        return [], None
+    try:
+        blocks = []
+        with pdfplumber.open(BytesIO(file_bytes)) as pdf:
+            page_count = len(pdf.pages)
+            for page in pdf.pages[:max_pages]:
+                for kwargs in ({"layout": True, "x_tolerance": 1, "y_tolerance": 3}, {}):
+                    try:
+                        text = page.extract_text(**kwargs) or ""
+                    except Exception:
+                        text = ""
+                    if text:
+                        blocks.append(text)
+                try:
+                    tables = page.extract_tables() or []
+                except Exception:
+                    tables = []
+                for table in tables[:4]:
+                    rows = []
+                    for row in table or []:
+                        cells = [str(cell or "").strip() for cell in row or []]
+                        if any(cells):
+                            rows.append(" | ".join(cells))
+                    if rows:
+                        blocks.append("\n".join(rows))
+        return blocks, page_count
+    except Exception:
+        return [], None
+
+
+def extract_report_pdf_text(file_bytes: bytes, max_pages: int = 12) -> tuple[str, str]:
     """Best-effort PDF text extraction for uploaded broker reports."""
     if not file_bytes:
         return "", "파일이 비어 있습니다."
-    readers = []
-    try:
-        from pypdf import PdfReader
-        readers.append(PdfReader)
-    except Exception:
-        pass
-    try:
-        from PyPDF2 import PdfReader
-        readers.append(PdfReader)
-    except Exception:
-        pass
-    if not readers:
-        return "", "PDF 텍스트 추출 라이브러리가 없어 파일명만 반영합니다."
-    try:
-        reader = readers[0](BytesIO(file_bytes))
-        texts = []
-        for page in list(reader.pages)[:max_pages]:
-            try:
-                texts.append(page.extract_text() or "")
-            except Exception:
-                continue
-        text = "\n".join(part.strip() for part in texts if part.strip())
-        if not text:
-            return "", "PDF에서 텍스트를 읽지 못했습니다. 스캔 PDF일 수 있습니다."
-        return text[:12000], f"PDF 본문 {min(len(reader.pages), max_pages)}페이지 텍스트 일부를 읽었습니다."
-    except Exception as exc:
-        return "", f"PDF 텍스트 추출 실패: {str(exc)[:80]}"
+    blocks = []
+    page_count = None
+    engines = []
+
+    pypdf_blocks, pypdf_pages = _extract_with_pypdf(file_bytes, max_pages)
+    if pypdf_blocks:
+        blocks.extend(pypdf_blocks)
+        engines.append("pypdf")
+    page_count = pypdf_pages or page_count
+
+    plumber_blocks, plumber_pages = _extract_with_pdfplumber(file_bytes, max_pages)
+    if plumber_blocks:
+        blocks.extend(plumber_blocks)
+        engines.append("pdfplumber")
+    page_count = plumber_pages or page_count
+
+    texts = _dedupe_text_blocks(blocks)
+    text = "\n\n".join(texts)
+    if not text:
+        return "", "PDF에서 텍스트 레이어를 읽지 못했습니다. 이미지형/스캔 PDF일 수 있어 원문 확인이 필요합니다."
+
+    pages_read = min(page_count or max_pages, max_pages)
+    engine_text = " + ".join(dict.fromkeys(engines)) if engines else "PDF 리더"
+    if len(text) < 500:
+        status = f"PDF {pages_read}페이지에서 텍스트 일부만 읽었습니다. 표나 이미지형 페이지는 원문 확인이 필요합니다."
+    else:
+        status = f"PDF {pages_read}페이지 텍스트를 읽었습니다. ({engine_text})"
+    return text[:30000], status
 
 
 BROKER_HINTS = [
@@ -260,7 +358,7 @@ def _parse_report_date(text: str) -> str:
 
 def _money_to_won(raw: str, unit: str = "") -> int | None:
     try:
-        value = float(str(raw).replace(",", "").strip())
+        value = float(str(raw).replace(",", "").replace(" ", "").strip())
     except ValueError:
         return None
     if "만원" in unit:
@@ -279,26 +377,40 @@ def _parse_target_price_with_evidence(text: str) -> tuple[int | None, str]:
     """Extract the report's own target price, never the market average fallback."""
     if not text:
         return None, ""
+    text = _normalize_pdf_text(text)
     candidates: list[dict] = []
-    patterns = [
-        r"(목표\s*(?:주가|가|가격)|적정\s*주가|Target\s*Price|TP|Fair\s*Value)\s*(?:\([^)]*\))?\s*[:：]?\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,8}|[0-9]+(?:\.[0-9]+)?)\s*(원|만원|천원|KRW)?",
-        r"(목표\s*(?:주가|가|가격)|적정\s*주가)\s*(?:\([^)]*\))?\s*[:：]?\s*\n?\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,8}|[0-9]+(?:\.[0-9]+)?)\s*(원|만원|천원)?",
-        r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,8}|[0-9]+(?:\.[0-9]+)?)\s*(원|만원|천원)?\s*(?:\([^)]*\))?\s*(목표\s*(?:주가|가|가격)|Target\s*Price|TP)",
+    target_label = (
+        r"(?:목\s*표\s*(?:주\s*가|가|가\s*격)|적\s*정\s*주\s*가|"
+        r"Target\s*Price|Fair\s*Value|TP)"
+    )
+    money = r"(?P<raw>[0-9]{1,3}(?:\s*,\s*[0-9]{3})+|[0-9]{4,8}|[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>원|만원|천원|KRW)?"
+    patterns: list[tuple[str, int]] = [
+        (rf"(?P<label>{target_label})\s*(?:\([^)]{{0,40}}\))?\s*(?:[:：|ㆍ·\-])?\s*(?:KRW\s*)?{money}", 0),
+        (rf"(?P<label>{target_label}).{{0,45}}?(?:KRW\s*)?{money}", 200),
+        (rf"{money}\s*(?:\([^)]{{0,40}}\))?\s*(?P<label>{target_label})", 500),
     ]
-    for pattern in patterns:
+    for pattern, base_penalty in patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
-            groups = match.groups()
-            if len(groups) >= 3 and re.search(r"목표|Target|TP|Fair", str(groups[0]), re.IGNORECASE):
-                raw, unit = groups[1], groups[2] or ""
-            else:
-                raw, unit = groups[0], groups[1] or ""
+            raw = match.groupdict().get("raw") or ""
+            unit = match.groupdict().get("unit") or ""
+            if not unit:
+                full_match = match.group(0)
+                if "만원" in full_match:
+                    unit = "만원"
+                elif "천원" in full_match:
+                    unit = "천원"
             value = _money_to_won(raw, unit)
             if value is None or value < 1000 or value > 10000000:
                 continue
             snippet = _target_evidence_snippet(text, match.start(), match.end())
-            bad_context = re.search(r"(현재\s*주가|현재가|종가|시가총액|상승\s*여력|Upside)", snippet, re.IGNORECASE)
+            bad_context = re.search(
+                r"(현재\s*주가|현재가|종가|시가총액|상승\s*여력|Upside).{0,18}"
+                + re.escape(str(raw)),
+                snippet,
+                re.IGNORECASE,
+            )
             old_context = re.search(r"(기존|종전|직전|이전)\s*(목표|TP|Target)", snippet, re.IGNORECASE)
-            score = match.start()
+            score = match.start() + base_penalty
             if bad_context:
                 score += 100000
             if old_context:
@@ -316,12 +428,21 @@ def _parse_target_price(text: str) -> int | None:
 
 
 def _parse_opinion(text: str) -> str:
-    lowered = text.lower()
-    if re.search(r"(투자의견|opinion|rating).{0,18}(매수|buy|outperform)", lowered, re.IGNORECASE):
+    lowered = _normalize_pdf_text(text).lower()
+    label = r"(투\s*자\s*의\s*견|opinion|rating|recommendation|investment\s*rating)"
+    if re.search(rf"{label}.{{0,45}}(적극\s*매수|strong\s*buy)", lowered, re.IGNORECASE):
+        return "적극매수"
+    if re.search(rf"{label}.{{0,45}}(매수|buy|outperform|overweight|trading\s*buy)", lowered, re.IGNORECASE):
         return "매수"
-    if re.search(r"(투자의견|opinion|rating).{0,18}(중립|hold|neutral|보유)", lowered, re.IGNORECASE):
+    if re.search(rf"{label}.{{0,45}}(중립|hold|neutral|marketperform|보유)", lowered, re.IGNORECASE):
         return "중립"
-    if re.search(r"(투자의견|opinion|rating).{0,18}(매도|sell|underperform)", lowered, re.IGNORECASE):
+    if re.search(rf"{label}.{{0,45}}(매도|sell|underperform|underweight)", lowered, re.IGNORECASE):
+        return "매도"
+    if re.search(r"(buy|매수)\s*(유지|상향|신규|의견)", lowered, re.IGNORECASE):
+        return "매수"
+    if re.search(r"(hold|neutral|중립|보유)\s*(유지|상향|하향|의견)", lowered, re.IGNORECASE):
+        return "중립"
+    if re.search(r"(sell|매도)\s*(유지|하향|의견)", lowered, re.IGNORECASE):
         return "매도"
     return ""
 
@@ -363,7 +484,6 @@ def build_report_comparison_rows(reports: list[dict], mean_target: float | None)
             elif gap <= -15:
                 verdict = "평균보다 보수적"
         rows.append({
-            "리포트": item.get("title") or item.get("file_name") or "업로드 리포트",
             "증권사": item.get("broker") or "확인 필요",
             "발행일": item.get("pub_date") or "확인 필요",
             "투자의견": item.get("opinion") or "",
@@ -371,6 +491,7 @@ def build_report_comparison_rows(reports: list[dict], mean_target: float | None)
             "평균 대비": f"{gap:+.1f}%" if gap is not None else "N/A",
             "판정": verdict,
             "목표가 근거": item.get("target_evidence") or "원문에서 목표가 문장을 찾지 못했습니다.",
+            "리포트": item.get("title") or item.get("file_name") or "업로드 리포트",
         })
     return rows
 
@@ -501,11 +622,26 @@ def _objective_theme_read(theme: str, analysis: dict) -> str:
         if cfo_margin is not None or fcf_margin is not None:
             return f"CFO 마진 {_fmt_pct(cfo_margin)}, FCF(잉여현금흐름) 마진 {_fmt_pct(fcf_margin)}입니다. 이익이 현금으로 바뀌는지 확인해야 합니다."
     if theme == "주가·수급":
-        return f"발행 이후 수익률 {_fmt_pct(timeline.get('realized'))}, 외국인 누적 순매수 {timeline.get('foreign_net', 0):+,}억원입니다. 리포트 방향과 가격 반응을 분리해서 봐야 합니다."
+        foreign_net = _num(timeline.get("foreign_net"))
+        foreign_text = "N/A" if foreign_net is None else f"{foreign_net:+,.0f}억원"
+        return f"발행 이후 수익률 {_fmt_pct(timeline.get('realized'))}, 외국인 누적 순매수 {foreign_text}입니다. 리포트 방향과 가격 반응을 분리해서 봐야 합니다."
     if theme == "해외·수출":
         disclosures = len((analysis.get("context") or {}).get("disclosures", []) or [])
         news = len((analysis.get("context") or {}).get("news", []) or [])
-        return f"해외 성장 논리는 DART 단일 재무만으로는 직접 분해가 제한됩니다. 발행 이후 공시 {disclosures}건, 뉴스 {news}건을 보조 근거로 대조합니다."
+        if disclosures or news:
+            bits = []
+            if disclosures:
+                bits.append(f"관련 공시 {disclosures}건")
+            if news:
+                bits.append(f"뉴스 {news}건")
+            return (
+                "DART 기본 재무제표만 보면 해외 매출만 따로 떼어 보기는 어렵습니다. "
+                f"대신 발행 이후 {' · '.join(bits)}이 있어 해외 성장 주장의 추가 근거로 확인합니다."
+            )
+        return (
+            "DART 기본 재무제표만 보면 해외 매출만 따로 떼어 보기는 어렵습니다. "
+            "발행 이후 새 공시나 뉴스도 아직 잡히지 않아, 리포트의 해외 성장 주장은 현재 숫자로는 확인이 부족합니다."
+        )
     return price_action.get("thesis") or "객관 데이터와 함께 재확인이 필요한 논점입니다."
 
 
@@ -514,7 +650,7 @@ def analyze_report_content_batch(analysis: dict) -> dict:
     if not reports and (analysis.get("report") or {}).get("text_excerpt"):
         reports = [analysis["report"]]
     if not reports:
-        return {"theme_rows": [], "claim_rows": [], "summary": ""}
+        return {"theme_rows": [], "claim_rows": [], "summary": "", "report_count": 0}
     theme_rows = []
     claim_rows = []
     for rule in REPORT_THEME_RULES:
@@ -568,14 +704,43 @@ def analyze_report_content_batch(analysis: dict) -> dict:
         })
     common = [row["논점"] for row in theme_rows if row["언급 리포트"].startswith(str(len(reports)) + "/")]
     mixed = [row["논점"] for row in theme_rows if "갈립니다" in row["해석"]]
+    confirmed = [
+        row["논점"] for row in theme_rows
+        if any(word in row.get("FinSight 대조", "") for word in ("확인됩니다", "확인", "성장 논리는 숫자로"))
+        and not _objective_read_has_tension(row.get("FinSight 대조", ""))
+    ]
+    weak = [
+        row["논점"] for row in theme_rows
+        if _objective_read_has_tension(row.get("FinSight 대조", ""))
+    ]
     summary_bits = []
     if common:
-        summary_bits.append(f"공통 논점은 {', '.join(common[:3])}입니다.")
+        summary_bits.append(
+            f"여러 리포트가 공통으로 기대는 전제는 {', '.join(common[:3])}입니다. "
+            "따라서 목표가 신뢰도는 이 전제들이 실제 숫자로 확인되는지에 달려 있습니다."
+        )
+    if confirmed:
+        summary_bits.append(f"현재 데이터로 비교적 확인되는 부분은 {', '.join(confirmed[:2])}입니다.")
+    if weak:
+        summary_bits.append(
+            f"반대로 {', '.join(weak[:2])}은 리포트 표현보다 보수적으로 봐야 합니다. "
+            "이 항목은 최종 신뢰도 차감 근거가 됩니다."
+        )
     if mixed:
-        summary_bits.append(f"의견이 갈리는 부분은 {', '.join(mixed[:3])}입니다.")
+        summary_bits.append(
+            f"{', '.join(mixed[:2])}은 증권사별 해석이 갈립니다. "
+            "목표가 차이는 이 전제를 얼마나 낙관적으로 보느냐에서 생긴 것으로 봅니다."
+        )
     if not summary_bits and theme_rows:
-        summary_bits.append("리포트별 강조점이 분산되어 있어 목표가 숫자뿐 아니라 본문 논점별 비교가 필요합니다.")
-    return {"theme_rows": theme_rows, "claim_rows": claim_rows[:18], "summary": " ".join(summary_bits)}
+        summary_bits.append(
+            "리포트별 강조점이 분산되어 있습니다. 목표가 숫자만 비교하기보다 어떤 전제를 더 낙관적으로 잡았는지 확인해야 합니다."
+        )
+    return {
+        "theme_rows": theme_rows,
+        "claim_rows": claim_rows[:18],
+        "summary": " ".join(summary_bits),
+        "report_count": len(reports),
+    }
 
 
 def _objective_read_has_tension(text: str) -> bool:
@@ -615,9 +780,9 @@ def assess_report_content_consistency(content: dict) -> dict:
     if optimistic_gap:
         sample = optimistic_gap[0]
         factors.append({
-            "title": "본문에서 좋게 본 부분이 숫자로는 덜 확인됨",
+            "title": "리포트가 좋게 본 전제가 아직 숫자로 충분히 확인되지 않음",
             "impact": "신뢰도 차감",
-            "reason": f"{sample.get('논점')}을 긍정적으로 본 리포트가 있지만, 실제 데이터 대조에서는 보수적으로 봐야 할 근거가 같이 확인됩니다.",
+            "reason": f"{sample.get('논점')}을 좋게 본 리포트가 있지만, 지금 확인되는 자료만으로는 그 전제를 그대로 인정하기 어렵습니다.",
             "evidence": sample.get("FinSight 대조", ""),
             "points": min(8, len(optimistic_gap) * 3),
             "severity": "Content",
@@ -656,6 +821,142 @@ def assess_report_content_consistency(content: dict) -> dict:
         "factors": factors,
         "divergent_count": len(divergent),
         "optimistic_gap_count": len(optimistic_gap),
+    }
+
+
+def _theme_brief_text(row: dict, group: str) -> str:
+    theme = row.get("논점", "핵심 논점")
+    objective = row.get("FinSight 대조", "")
+    if group == "trusted":
+        if theme == "실적 성장":
+            return (
+                "리포트들이 말한 성장 방향은 일단 받아들여도 됩니다. "
+                f"{objective} 다만 이 말이 곧 목표가 전체를 정당화한다는 뜻은 아니고, 다음 분기에도 같은 흐름이 이어지는지가 핵심입니다."
+            )
+        if theme == "수익성·마진":
+            return (
+                "마진이 좋아지고 있다는 주장 자체는 숫자로 대조할 수 있습니다. "
+                f"{objective} 매출 성장과 이익률이 같이 움직이면 목표가의 기본 전제는 더 단단해집니다."
+            )
+        if theme == "현금흐름·투자":
+            return (
+                "이익이 실제 현금으로 남는지는 목표가 신뢰도에 중요합니다. "
+                f"{objective} 현금흐름이 버티면 리포트의 이익 전망을 더 편하게 받아들일 수 있습니다."
+            )
+        return (
+            f"{theme}은 리포트들이 비교적 같은 방향으로 보고 있고, 현재 데이터도 크게 반대하지 않습니다. "
+            f"{objective}"
+        )
+    if group == "watch":
+        if theme == "해외·수출":
+            return (
+                "해외 성장은 리포트에서 좋게 쓰였더라도 아직 목표가를 밀어주는 확실한 숫자로 보긴 어렵습니다. "
+                f"{objective} 그래서 이 부분은 '가능성'으로 두고, 목표가 신뢰도에는 보수적으로 반영합니다."
+            )
+        if theme == "원가·비용":
+            return (
+                "비용 부담을 낮게 본 리포트라면 조심해서 봐야 합니다. "
+                f"{objective} 매출이 늘어도 비용이 같이 올라가면 목표가에 필요한 이익이 덜 남습니다."
+            )
+        if theme == "주가·수급":
+            return (
+                "리포트 방향이 맞아도 가격과 수급이 따라오지 않으면 주가 반영은 늦어질 수 있습니다. "
+                f"{objective}"
+            )
+        return (
+            f"{theme}은 리포트 문장만으로 확정하기 어렵습니다. "
+            f"{objective} 이 부분은 목표가를 믿기 전에 한 번 할인해서 봅니다."
+        )
+    if group == "contested":
+        return (
+            f"{theme}은 증권사마다 해석이 갈리는 부분입니다. "
+            f"{row.get('리포트 간 차이', '')} 목표가 차이는 이 전제를 얼마나 좋게 보느냐에서 생긴 것으로 봅니다."
+        )
+    return objective
+
+
+def _mention_counts(text: str) -> tuple[int, int]:
+    match = re.search(r"(\d+)\s*/\s*(\d+)", str(text or ""))
+    if not match:
+        return 0, 0
+    return int(match.group(1)), int(match.group(2))
+
+
+def _claim_brief(claims: list[dict]) -> str:
+    bits = []
+    for claim in claims[:2]:
+        broker = claim.get("리포트") or "리포트"
+        stance = claim.get("방향") or "확인"
+        basis = claim.get("본문 근거") or ""
+        bits.append(f"{broker} {stance}: {basis}")
+    return " / ".join(bits)
+
+
+def build_report_briefing(content: dict, assessment: dict | None = None) -> dict:
+    rows = content.get("theme_rows") or []
+    if not rows:
+        return {"headline": "", "trusted": [], "watch": [], "contested": []}
+
+    claims_by_theme: dict[str, list[dict]] = {}
+    for claim in content.get("claim_rows") or []:
+        claims_by_theme.setdefault(claim.get("논점", ""), []).append(claim)
+
+    trusted: list[dict] = []
+    watch: list[dict] = []
+    contested: list[dict] = []
+    for row in rows:
+        objective = row.get("FinSight 대조", "")
+        has_positive = (row.get("방향 분포") or {}).get("긍정", 0) > 0
+        mentioned, total = _mention_counts(row.get("언급 리포트", ""))
+        if not total:
+            total = content.get("report_count") or 1
+        common_threshold = 1 if total <= 1 else max(2, (total * 3 + 4) // 5)
+        is_common = mentioned >= common_threshold
+        is_tension = _objective_read_has_tension(objective) or "어렵" in objective or "부족" in objective
+        theme = row.get("논점", "")
+        claim_text = _claim_brief(claims_by_theme.get(theme, []))
+        item = {
+            "title": theme,
+            "source": row.get("리포트 간 차이", ""),
+            "evidence": objective,
+            "claim": claim_text,
+            "mention": row.get("언급 리포트", ""),
+        }
+        if row.get("판정") == "의견 차이":
+            contested.append({**item, "read": _theme_brief_text(row, "contested")})
+        elif is_common and has_positive and not is_tension:
+            trusted.append({**item, "read": _theme_brief_text(row, "trusted")})
+        elif is_common and row.get("판정") == "중립" and not is_tension:
+            trusted.append({**item, "read": _theme_brief_text(row, "trusted")})
+        elif has_positive or is_tension or row.get("판정") == "부담 우세":
+            watch.append({**item, "read": _theme_brief_text(row, "watch")})
+        elif is_common:
+            trusted.append({**item, "read": _theme_brief_text(row, "trusted")})
+
+    trusted = trusted[:3]
+    watch = watch[:3]
+    contested = contested[:2]
+
+    if trusted:
+        headline = (
+            f"읽고 가져가도 되는 핵심은 {', '.join(item['title'] for item in trusted[:2])}입니다. "
+            "이 부분은 리포트들이 반복해서 짚었고, 현재 확인되는 데이터와 큰 충돌이 없습니다."
+        )
+        if watch:
+            headline += f" 다만 {', '.join(item['title'] for item in watch[:2])}은 아직 목표가 근거로 강하게 인정하기 어렵습니다."
+    else:
+        headline = "현재 업로드된 리포트들에서 그대로 가져갈 만한 공통 전제는 아직 약합니다."
+        if watch:
+            headline += f" 특히 {', '.join(item['title'] for item in watch[:2])}은 리포트 표현보다 보수적으로 봅니다."
+    if contested:
+        headline += f" {', '.join(item['title'] for item in contested[:2])}은 증권사별 해석 차이가 있습니다."
+
+    return {
+        "headline": headline,
+        "trusted": trusted,
+        "watch": watch,
+        "contested": contested,
+        "penalty": (assessment or {}).get("penalty", 0),
     }
 
 
@@ -734,7 +1035,7 @@ def render_report_batch_distribution(analysis: dict) -> None:
         opinion_text = " · ".join(f"{key} {value}" for key, value in stats.get("opinions", {}).items()) or "확인된 의견 없음"
         st.metric("투자의견 분포", opinion_text)
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.info("목표가와 투자의견이 모두 확인된 리포트가 아직 없습니다.")
     notes = missing_comparison_notes(reports)
@@ -768,7 +1069,7 @@ def render_report_batch_overview(analysis: dict) -> None:
         opinion_text = " · ".join(f"{key} {value}" for key, value in stats["opinions"].items()) or "확인된 의견 없음"
         st.metric("투자의견 분포", opinion_text)
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     notes = missing_comparison_notes(reports)
     for note in notes[:5]:
         st.caption(f"* {note}")
@@ -1106,19 +1407,119 @@ def summarize_post_event(item: dict) -> str:
     return "리포트 발행 이후 확인된 DART 공시입니다. 목표가와 투자의견의 전제가 바뀌었는지 확인하는 보조 근거입니다."
 
 
+def explain_post_event_impact(item: dict) -> str:
+    title = str(item.get("title") or item.get("detail") or "")
+    event_type = str(item.get("type") or "")
+    ratio_change = _num(item.get("ratio_change"))
+    if event_type == "지분공시" or "대량보유" in title or "지분" in title:
+        if ratio_change is not None and ratio_change < 0:
+            return (
+                f"신뢰도 영향: 주요주주 보유비율이 {ratio_change:+.2f}%p 줄어 단기 수급 부담으로 반영합니다. "
+                "실적 가정 자체를 부정하진 않지만, 목표가까지 바로 회복된다고 보기 어렵게 만드는 요인입니다."
+            )
+        if ratio_change is not None and ratio_change > 0:
+            return (
+                f"신뢰도 영향: 주요주주 보유비율이 {ratio_change:+.2f}%p 늘어 수급 측면에서는 완충 요인입니다. "
+                "다만 목표가 정당화는 실적과 현금흐름 확인이 함께 필요합니다."
+            )
+        return "신뢰도 영향: 지분 변동 성격을 확인해 수급 부담인지, 단순 보고인지 구분해야 합니다."
+    if "실적" in title or "잠정" in title:
+        return (
+            "신뢰도 영향: 리포트 발행 당시의 매출·이익 가정을 최신 숫자로 다시 대체해야 하는 항목입니다. "
+            "실적이 리포트 방향과 다르면 발행 이후 괴리 점수에 직접 영향을 줍니다."
+        )
+    if "기업설명회" in title or "IR" in title.upper():
+        return (
+            "신뢰도 영향: 회사가 발행 이후 새로 설명한 전략·실적 방향입니다. "
+            "리포트의 성장 스토리가 이어지는지 확인하는 보조 근거로 반영합니다."
+        )
+    if "투자" in title or "계약" in title:
+        return (
+            "신뢰도 영향: 향후 매출 성장에는 긍정적일 수 있지만, 투자비·운전자본 부담이 같이 커질 수 있습니다. "
+            "목표가를 인정하려면 성장 효과와 현금흐름 영향을 함께 봅니다."
+        )
+    if "지속가능" in title or "ESG" in title.upper():
+        return (
+            "신뢰도 영향: 목표가 계산을 바로 바꾸는 항목은 아니지만, 비재무 리스크와 지배구조 확인 자료로 둡니다. "
+            "큰 이슈가 있으면 객관분석 차감 근거가 됩니다."
+        )
+    return (
+        "신뢰도 영향: 리포트 이후 새로 공개된 정보라 목표가·투자의견의 전제가 아직 유효한지 확인하는 자료입니다. "
+        "숫자 영향이 확인되면 발행 이후 괴리와 종합평가에 반영합니다."
+    )
+
+
+def explain_growth_history(rev: dict) -> tuple[str, str]:
+    if rev.get("verdict") == "확인 필요":
+        return (
+            "과거 성장률은 참고용입니다",
+            rev.get("limited_reason") or "EPS 역산에 필요한 데이터가 부족해 목표가가 요구하는 성장률과 직접 비교하지 않았습니다.",
+        )
+
+    need = _num(rev.get("need_growth"))
+    median = _num(rev.get("median_growth"))
+    avg = _num(rev.get("avg_growth"))
+    reference = _num(rev.get("reference_growth")) if rev.get("reference_growth") is not None else median
+    history = [_num(value) for value in rev.get("growth_history", [])]
+    history = [value for value in history if value is not None]
+    volatility = rev.get("volatility", "")
+    if need is None or median is None:
+        return (
+            "목표가에 필요한 성장을 과거와 비교합니다",
+            "이 그래프는 목표가가 요구하는 이익 성장률이 회사의 과거 정상 범위 안에 있는지 보기 위한 기준선입니다.",
+        )
+
+    max_growth = max(history) if history else None
+    min_growth = min(history) if history else None
+    if max_growth is not None and need > max_growth:
+        title = "목표가가 과거 최고 성장률보다 높은 성장을 요구합니다"
+        body = (
+            f"필요 성장률 {need:+.1f}%가 과거 관측 최고치 {max_growth:+.1f}%를 넘어섭니다. "
+            "이 경우 리포트 목표가를 인정하려면 단순한 회복이 아니라 새 성장 동력이나 이익률 개선이 숫자로 확인돼야 합니다."
+        )
+    elif reference is not None and need > reference:
+        title = "목표가가 보통 수준보다 높은 성장을 전제로 합니다"
+        body = (
+            f"필요 성장률 {need:+.1f}%가 과거 중앙값 {median:+.1f}%보다 높습니다. "
+            "목표가가 틀렸다는 뜻은 아니지만, 다음 실적에서 매출 성장과 마진 개선이 같이 확인되지 않으면 신뢰도가 낮아집니다."
+        )
+    elif need < 0:
+        title = "목표가가 큰 이익 성장을 요구하지는 않습니다"
+        body = (
+            f"필요 성장률이 {need:+.1f}%라 과거 중앙값 {median:+.1f}%보다 부담이 작습니다. "
+            "이 경우 목표가 검증의 핵심은 실적보다 발행 이후 주가·수급 괴리와 본문 의견의 현실성입니다."
+        )
+    else:
+        title = "목표가가 과거 보통 성장 범위 안에 있습니다"
+        body = (
+            f"필요 성장률 {need:+.1f}%가 과거 중앙값 {median:+.1f}%와 크게 벗어나지 않습니다. "
+            "따라서 이 축에서는 목표가가 무리하다고 보기 어렵고, 다른 축의 수급·공시 변화를 함께 봅니다."
+        )
+
+    if volatility in ("높음", "매우높음"):
+        body += " 과거 성장률 변동성이 커서 평균보다 중앙값을 기준으로 보는 편이 더 안전합니다."
+    elif avg is not None:
+        body += f" 참고로 단순 평균은 {avg:+.1f}%입니다."
+    if min_growth is not None and max_growth is not None:
+        body += f" 과거 관측 범위는 {min_growth:+.1f}%~{max_growth:+.1f}%입니다."
+    return title, body
+
+
 def build_post_report_events(context: dict, report_date: str) -> list[dict]:
     events: list[dict] = []
     for item in (context or {}).get("disclosures", [])[:12]:
         date = _normalize_event_date(item.get("date"))
         if report_date and date and date < report_date:
             continue
-        events.append({
+        event = {
             "date": date,
             "type": "공시",
             "detail": item.get("title", ""),
             "summary": summarize_post_event(item),
             "url": item.get("url", ""),
-        })
+        }
+        event["impact"] = explain_post_event_impact(event)
+        events.append(event)
     for item in (context or {}).get("ownership", [])[:8]:
         date = _normalize_event_date(item.get("date"))
         if report_date and date and date < report_date:
@@ -1126,13 +1527,16 @@ def build_post_report_events(context: dict, report_date: str) -> list[dict]:
         change = item.get("ratio_change")
         if change is None:
             continue
-        events.append({
+        event = {
             "date": date,
             "type": "지분공시",
             "detail": f"{item.get('reporter', '주요주주')} 보유비율 {change:+.2f}%p 변동",
             "summary": summarize_post_event(item),
             "url": item.get("url", ""),
-        })
+            "ratio_change": change,
+        }
+        event["impact"] = explain_post_event_impact(event)
+        events.append(event)
     events.sort(key=lambda item: item.get("date") or "", reverse=True)
     return events[:6]
 
@@ -1300,7 +1704,7 @@ def render_product_header() -> None:
         st.markdown(f"## {PRODUCT_TITLE}")
     with mode_col:
         st.markdown("<div style='height:3px'></div>", unsafe_allow_html=True)
-        if st.button("Analyst Mode", key="open_analyst_mode", use_container_width=True):
+        if st.button("Analyst Mode", key="open_analyst_mode", width="stretch"):
             st.query_params["view"] = "analyst"
             st.rerun()
     st.caption(PRODUCT_COPY)
@@ -1338,24 +1742,28 @@ st.sidebar.markdown("**1️⃣ 종목 검색**")
 company_search = st.sidebar.text_input(
     "종목명", placeholder="예: 삼성전자, 농심, 카카오", label_visibility="collapsed",
 )
-if st.sidebar.button("🔍 검색", use_container_width=True) and company_search:
+if st.sidebar.button("🔍 검색", width="stretch") and company_search:
     st.session_state["search_result"] = search_company_and_consensus(company_search)
 
-search_result = st.session_state.get("search_result")
+search_result = st.session_state.get("search_result") or {}
 
-if search_result and search_result["success"]:
-    selected_company = search_result["company_name"]
-    consensus = search_result["consensus"]
+if search_result and search_result.get("success"):
+    selected_company = search_result.get("company_name") or company_search
+    consensus = search_result.get("consensus") or {}
     stock_code = search_result.get("stock_code")
-    mean = consensus["price_target_mean"]
-    st.sidebar.success(
-        f"**{selected_company}**\n\n"
-        f"증권사 목표가 평균 **{mean:,.0f}원**\n\n"
-        f"투자의견 {consensus['opinion_label']} · {consensus['create_date']}"
-    )
+    mean = consensus.get("price_target_mean") or 0
+    if mean:
+        st.sidebar.success(
+            f"**{selected_company}**\n\n"
+            f"증권사 목표가 평균 **{mean:,.0f}원**\n\n"
+            f"투자의견 {consensus.get('opinion_label', '확인 필요')} · {consensus.get('create_date', '')}"
+        )
+    else:
+        st.sidebar.success(f"**{selected_company}** 종목코드 {stock_code} 확인")
+        st.sidebar.caption("증권사 목표가 평균은 확인하지 못했습니다. PDF 업로드 또는 목표가 직접 입력으로 검증을 진행하세요.")
 
     st.sidebar.markdown("**2️⃣ 검증할 리포트**")
-    reports = fetch_research_list(stock_code)
+    reports = fetch_research_list(stock_code) if stock_code else []
     selected_naver_report = None
     research_list_url = (
         "https://finance.naver.com/research/company_list.naver"
@@ -1370,7 +1778,7 @@ if search_result and search_result["success"]:
         if broker_names:
             st.sidebar.caption(f"최근 리포트 발간: {', '.join(broker_names[:4])}")
         labels = ["직접 입력"] + [
-            f"{item['date']} · {item['broker']} · {item['title']}"
+            f"{item.get('date', '')} · {item.get('broker', '')} · {item.get('title', '')}"
             for item in reports
         ]
         chosen = st.sidebar.selectbox("네이버 리포트 선택", labels)
@@ -1400,7 +1808,7 @@ if search_result and search_result["success"]:
             default_date = datetime.date.fromisoformat(selected_naver_report["date"])
         except ValueError:
             default_date = None
-    target_default = int(mean)
+    target_default = int(mean or 0)
     target_help = "기본값은 증권사 목표가 평균입니다. 특정 리포트 목표가로 바꿔보세요."
     opinion_default = "매수"
 
@@ -1414,7 +1822,7 @@ if search_result and search_result["success"]:
         applied_fingerprint = st.session_state.get("uploaded_report_fingerprint")
         if applied_fingerprint != upload_fingerprint:
             st.sidebar.caption(f"{len(uploaded_reports)}개 파일 선택됨. 아래 버튼을 눌러 분석에 반영하세요.")
-        if st.sidebar.button("업로드 완료 · 분석에 반영", type="primary", use_container_width=True):
+        if st.sidebar.button("업로드 완료 · 분석에 반영", type="primary", width="stretch"):
             processed_reports = []
             for uploaded_report in uploaded_reports:
                 text, status = extract_report_pdf_text(uploaded_report.getvalue())
@@ -1508,20 +1916,32 @@ if search_result and search_result["success"]:
             st.dataframe(
                 pd.DataFrame(build_report_comparison_rows(uploaded_report_summaries, consensus.get("price_target_mean"))),
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
 
-    st.sidebar.markdown("**리포트를 찾지 못하셨나요?**")
-    st.sidebar.caption("아래 링크에서 원문을 열어 PDF를 받은 뒤 위 업로드 칸에 넣을 수 있습니다.")
     search_query = quote(f"{selected_company} 증권사 리포트 PDF")
     naver_search_url = f"https://search.naver.com/search.naver?query={search_query}"
     google_search_url = f"https://www.google.com/search?q={search_query}"
     st.sidebar.markdown(
         f"""
-        <div style="font-size:12px;line-height:1.65">
-          <a href="{research_list_url}" target="_blank">네이버 리서치 목록</a><br>
-          <a href="{naver_search_url}" target="_blank">네이버 검색</a> ·
-          <a href="{google_search_url}" target="_blank">구글 검색</a>
+        <div style="margin:12px 0 14px;padding:10px 11px;border:1px solid #D7E1EA;
+                    border-radius:8px;background:#F8FAFC">
+          <div style="font-size:13px;font-weight:800;color:#17202A;margin-bottom:7px">
+            리포트 파일을 못 찾았다면
+          </div>
+          <div style="font-size:13px;line-height:1.9">
+            <a href="{research_list_url}" target="_blank"
+               style="font-weight:750;color:#185FA5;text-decoration:none">네이버 리서치 목록</a>
+            <span style="color:#CBD5E1"> | </span>
+            <a href="{naver_search_url}" target="_blank"
+               style="font-weight:750;color:#185FA5;text-decoration:none">네이버 검색</a>
+            <span style="color:#CBD5E1"> | </span>
+            <a href="{google_search_url}" target="_blank"
+               style="font-weight:750;color:#185FA5;text-decoration:none">구글 검색</a>
+          </div>
+          <div style="font-size:12px;color:#667085;margin-top:5px;line-height:1.45">
+            원문 PDF를 받은 뒤 바로 위 업로드 칸에 넣으면 됩니다.
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1545,7 +1965,7 @@ if search_result and search_result["success"]:
     ready = selected_target and selected_target > 0
 
 elif search_result:
-    st.sidebar.warning(search_result["message"])
+    st.sidebar.warning(search_result.get("message", "종목 검색 결과를 확인하지 못했습니다."))
     st.sidebar.caption("종목코드는 찾았으나 증권사 커버리지가 없을 수 있습니다.")
 
 st.sidebar.divider()
@@ -1567,7 +1987,7 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
                   cache_version: int = 2):
     """검증할 리포트 목표가 기반 검증.
 
-    실제 DART 재무 수집을 우선하고, 실패 시 농심 데모로 폴백한다.
+    실제 DART 재무 수집을 우선하고, 실패 시 보조 재무 데이터로 앱 흐름을 유지한다.
     ①축은 네이버 증권사 목표가 평균 대비 위치로 판단한다.
     """
     real = fetch_real_financials(company_name)
@@ -1610,10 +2030,19 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
     )
 
     # ③ 필요 실적 (목표가 역산)
-    reverse = reverse_engineer_target(
-        target_price=target_price, kpis=kpis,
-        shares_outstanding=shares, current_price=price,
-    )
+    try:
+        reverse = reverse_engineer_target(
+            target_price=target_price, kpis=kpis,
+            shares_outstanding=shares, current_price=price,
+        )
+    except Exception as exc:
+        reverse = reverse_engineer_target_lenient(
+            target_price=target_price,
+            kpis=kpis,
+            shares_outstanding=shares,
+            current_price=price,
+            reason=str(exc),
+        )
     if "need_eps" not in reverse and reverse.get("current_eps") is not None:
         reverse["need_eps"] = round(float(reverse["current_eps"]) * (1 + float(reverse.get("need_growth", 0)) / 100))
     research = get_research_reference(comp_name)
@@ -1674,6 +2103,7 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         "price_action": price_action,
     })
     content_assessment = assess_report_content_consistency(content_analysis)
+    content_analysis["briefing"] = build_report_briefing(content_analysis, content_assessment)
 
     # 종합 신뢰도
     verdict = build_report_verdict(
@@ -1761,26 +2191,41 @@ if A is None:
 co, rep, V = A["company"], A["report"], A["verdict"]
 content_view = A.get("report_content") or analyze_report_content_batch(A)
 content_assessment = A.get("report_content_assessment") or assess_report_content_consistency(content_view)
+content_briefing = content_view.get("briefing") or build_report_briefing(content_view, content_assessment)
+content_view["briefing"] = content_briefing
 
 # ──────────────────────────────────────────────
 # 헤더
 # ──────────────────────────────────────────────
 render_product_header()
 st.markdown(
-    f"**{co['name']}** · "
-    f"{rep['broker']} · {rep['pub_date']} · "
-    f"**{rep['opinion']}** · "
-    f"목표가 {rep['target_price']:,}원"
+    f"<div style='display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;"
+    f"padding:13px 18px;border:1px solid #E2E8F0;border-radius:10px;background:#FFFFFF;margin:6px 0 4px'>"
+    f"<span style='font-size:19px;font-weight:850;color:#17202A'>{co['name']}</span>"
+    f"<span style='color:#CBD5E1'>|</span>"
+    f"<span style='font-size:14px;color:#475569'>{rep['broker']} · {rep['pub_date']}</span>"
+    f"<span style='font-size:13px;font-weight:800;color:#185FA5;background:#EAF2FB;"
+    f"padding:2px 10px;border-radius:20px'>{rep['opinion']}</span>"
+    f"<span style='font-size:14px;color:#475569'>목표가 "
+    f"<b style='color:#17202A;font-size:15px'>{rep['target_price']:,}원</b></span>"
+    f"</div>",
+    unsafe_allow_html=True,
 )
+meta_lines = []
 if rep.get("title"):
-    st.caption(f"검증 리포트: {rep['title']}")
+    meta_lines.append(f"<div><b>검증 리포트</b>: {html.escape(str(rep['title']))}</div>")
 if rep.get("file_name"):
     status_text = f" · {rep.get('extract_status')}" if rep.get("extract_status") else ""
-    st.caption(f"업로드 리포트: {rep['file_name']}{status_text}")
+    meta_lines.append(f"<div><b>업로드 리포트</b>: {html.escape(str(rep['file_name'] + status_text))}</div>")
 if rep.get("batch_count", 0) > 1:
-    st.caption(f"업로드 리포트 {rep['batch_count']}개를 비교하고, 종합 점수는 추출된 목표가의 중앙값을 기준으로 계산했습니다.")
+    meta_lines.append(
+        f"<div>업로드 리포트 {int(rep['batch_count'])}개를 비교하고, 종합 점수는 추출된 목표가의 중앙값을 기준으로 계산했습니다.</div>"
+    )
 if rep.get("pdf_url"):
-    st.markdown(f"[원문 PDF 열기]({rep['pdf_url']})")
+    meta_lines.append(
+        f"<div><a href='{html.escape(str(rep['pdf_url']))}' target='_blank' "
+        f"style='color:#185FA5;text-decoration:none;font-weight:700'>원문 PDF 열기</a></div>"
+    )
 
 html_report = generate_retail_html_report(A)
 try:
@@ -1789,13 +2234,22 @@ except Exception:
     pdf_report = None
 
 if A.get("is_demo_financials"):
-    st.warning(
-        f"⚠️ **{co['name']}의 실제 재무를 DART에서 가져오지 못해 농심 데모 재무로 계산했습니다.** "
-        f"(완전연도 EPS 부족 또는 종목 매칭 실패) "
-        f"목표가 편차(①축)는 검색값을 반영하지만, 발행 이후 괴리(②축)·필요 실적(③축)은 데모입니다."
+    meta_lines.append(
+        "재무 항목은 현재 연결 가능한 보조값으로 계산했습니다. 실제 DART 반영 상태와 점수 영향은 '근거·출처' 탭에서 확인할 수 있습니다."
     )
 else:
-    st.caption(f"✅ 실제 DART 재무 연동 — 현재가 {co['current_price']:,.0f}원 · 발행주식수 {co['shares_outstanding']:,.0f}주")
+    share_text = f" · 발행주식수 {co['shares_outstanding']:,.0f}주" if co.get("shares_outstanding") else ""
+    meta_lines.append(f"실제 DART 재무 연동 · 현재가 {co['current_price']:,.0f}원{share_text}")
+    if (A.get("reverse") or {}).get("limited"):
+        meta_lines.append(f"필요 실적은 보조 계산으로 표시합니다: {(A.get('reverse') or {}).get('limited_reason')}")
+
+if meta_lines:
+    st.markdown(
+        "<div style='font-size:12.5px;color:#667085;line-height:1.34;margin:-1px 0 7px 2px'>"
+        + "".join(f"<div style='margin:0 0 1px 0'>{line}</div>" for line in meta_lines)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
 render_report_batch_overview(A)
 
@@ -1862,19 +2316,16 @@ with sc2:
     penalty_text = "차감 없음" if not content_penalty else f"-{content_penalty}점"
     st.caption(f"본문 의견 검증: {content_label} · 객관분석 {penalty_text}")
 
-st.markdown("#### 평가 의견")
-st.markdown(f"**{V['headline']}**")
-st.markdown(V["guide"])
-
-alignment = V.get("alignment", {})
-if alignment:
-    st.markdown(f"#### FinSight 객관분석 대조 · {alignment.get('label', '')}")
-    factor_bits = []
-    for factor in alignment.get("factors", [])[:3]:
-        points = factor.get("points", 0)
-        point_text = f" -{points}점" if points else ""
-        factor_bits.append(f"**{factor.get('title')}**{point_text} · {factor.get('evidence')}")
-    st.markdown("  \n".join(factor_bits))
+# 핵심 결론은 한 줄 배너로만 고정 노출.
+# 상세 평가의견·객관분석 대조는 '종합평가' 탭에서 전체를 봅니다.
+st.markdown(
+    f"<div style='margin:14px 0 4px;padding:12px 16px;border-left:4px solid {gc};"
+    f"background:{COLOR['bg']};border-radius:0 8px 8px 0'>"
+    f"<span style='font-size:15px;font-weight:800;color:#17202A'>{V['headline']}</span>"
+    f"<span style='font-size:13px;color:#667085;margin-left:8px'>· 자세한 평가의견과 객관분석 대조는 ‘종합평가’ 탭에서 확인하세요</span>"
+    f"</div>",
+    unsafe_allow_html=True,
+)
 
 st.divider()
 
@@ -1960,46 +2411,171 @@ def render_axis_brief(question: str, data: str, output: str) -> None:
         unsafe_allow_html=True,
     )
 
+
+def _brief_item_html(item: dict) -> str:
+    title = html.escape(str(item.get("title") or "핵심 내용"))
+    read = html.escape(str(item.get("read") or ""))
+    claim = html.escape(str(item.get("claim") or ""))
+    evidence = html.escape(str(item.get("evidence") or ""))
+    mention = html.escape(str(item.get("mention") or ""))
+    claim_html = f"<div class='fs-brief-source'>리포트 본문: {claim}</div>" if claim else ""
+    evidence_html = f"<div class='fs-brief-evidence'>데이터 대조: {evidence}</div>" if evidence else ""
+    mention_html = f"<span>{mention}</span>" if mention else ""
+    return f"""
+      <li>
+        <div class="fs-brief-item-title">{title} {mention_html}</div>
+        <div class="fs-brief-read">{read}</div>
+        {claim_html}
+        {evidence_html}
+      </li>
+    """
+
+
+def _brief_section_html(title: str, items: list[dict], empty: str) -> str:
+    body = "".join(_brief_item_html(item) for item in items)
+    if not body:
+        body = f"<li><div class='fs-brief-read muted'>{html.escape(empty)}</div></li>"
+    return f"""
+      <section>
+        <h4>{html.escape(title)}</h4>
+        <ul>{body}</ul>
+      </section>
+    """
+
+
+def render_report_briefing(briefing: dict) -> None:
+    if not briefing or not briefing.get("headline"):
+        return
+    headline = html.escape(str(briefing.get("headline") or ""))
+    st.markdown(
+        f"""
+        <div class="fs-brief-wrap">
+          <div class="fs-brief-kicker">리포트에서 실제로 가져갈 내용</div>
+          <div class="fs-brief-head">{headline}</div>
+          <div class="fs-brief-grid">
+            {_brief_section_html("믿고 가져갈 내용", briefing.get("trusted") or [], "아직 강하게 확인된 공통 내용은 없습니다.")}
+            {_brief_section_html("아직 보수적으로 볼 내용", briefing.get("watch") or [], "큰 차감으로 볼 내용은 제한적입니다.")}
+            {_brief_section_html("리포트끼리 갈리는 내용", briefing.get("contested") or [], "증권사별 해석 차이는 크게 잡히지 않았습니다.")}
+          </div>
+        </div>
+        <style>
+        .fs-brief-wrap {{
+            margin: 10px 0 14px;
+            padding: 13px 14px 12px;
+            border: 1px solid #DCE6EF;
+            border-radius: 8px;
+            background: #FFFFFF;
+        }}
+        .fs-brief-kicker {{
+            color: #185FA5;
+            font-size: 12px;
+            font-weight: 850;
+            margin-bottom: 5px;
+        }}
+        .fs-brief-head {{
+            color: #17202A;
+            font-size: 14px;
+            font-weight: 760;
+            line-height: 1.55;
+            margin-bottom: 10px;
+        }}
+        .fs-brief-grid {{
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+        }}
+        .fs-brief-grid section {{
+            border-top: 2px solid #E5EAF0;
+            padding-top: 8px;
+        }}
+        .fs-brief-grid h4 {{
+            margin: 0 0 6px;
+            color: #173B57;
+            font-size: 13px;
+        }}
+        .fs-brief-grid ul {{
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }}
+        .fs-brief-grid li {{
+            margin: 0 0 10px;
+        }}
+        .fs-brief-item-title {{
+            color: #17202A;
+            font-size: 13px;
+            font-weight: 850;
+            line-height: 1.35;
+        }}
+        .fs-brief-item-title span {{
+            color: #64748B;
+            font-size: 11px;
+            font-weight: 750;
+        }}
+        .fs-brief-read {{
+            color: #334155;
+            font-size: 12.5px;
+            line-height: 1.55;
+            margin-top: 3px;
+        }}
+        .fs-brief-source, .fs-brief-evidence {{
+            color: #667085;
+            font-size: 11.5px;
+            line-height: 1.45;
+            margin-top: 3px;
+        }}
+        .fs-brief-read.muted {{
+            color: #94A3B8;
+        }}
+        @media (max-width: 900px) {{
+            .fs-brief-grid {{ grid-template-columns: 1fr; }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 dist = A["distribution"]
 tl = A["timeline"]
 rev = A["reverse"]
 if "need_eps" not in rev and rev.get("current_eps") is not None:
     rev["need_eps"] = round(float(rev["current_eps"]) * (1 + float(rev.get("need_growth", 0)) / 100))
 
-c1, c2, c3, c4 = st.columns(4)
-
-with c1:
-    st.markdown("#### ① 목표가 편차")
-    st.markdown(f"### {signal_icon(dist['position'])} {dist['position']}")
-    st.caption(
-        f"목표가 평균 {dist['mean']:,.0f}원 대비 {dist['vs_median_pct']:+.1f}%"
+sig = "확인 필요" if tl["supply_gap"] else "양호"
+content_label = content_assessment.get("label", "본문 미반영")
+if content_assessment.get("score") is None:
+    content_caption = "PDF 본문을 읽으면 리포트별 의견 차이를 반영합니다"
+else:
+    content_caption = (
+        f"논점 {len(content_view.get('theme_rows', []))}개 · "
+        f"객관분석 -{content_assessment.get('penalty', 0)}점"
     )
 
-with c2:
-    sig = "확인 필요" if tl["supply_gap"] else "양호"
-    st.markdown("#### ② 발행 이후 괴리")
-    st.markdown(f"### {signal_icon(sig)} {sig}")
-    st.caption(f"발행 {tl['elapsed']}일 경과 · 여력 {tl['soak_pct']}% 소진")
+signal_cards = [
+    ("① 목표가 편차", COLOR["space"], signal_icon(dist["position"]), dist["position"],
+     f"목표가 평균 {dist['mean']:,.0f}원 대비 {dist['vs_median_pct']:+.1f}%"),
+    ("② 발행 이후 괴리", COLOR["time"], signal_icon(sig), sig,
+     f"발행 {tl['elapsed']}일 경과 · 여력 {tl['soak_pct']}% 소진"),
+    ("③ 필요 실적", COLOR["logic"], signal_icon(rev["verdict"]), rev["verdict"],
+     (rev.get("limited_reason") if rev.get("verdict") == "확인 필요"
+      else f"필요 성장률 {rev['need_growth']:+.0f}% · 과거 중앙값 {rev['median_growth']:+.0f}%")),
+    ("④ 본문 의견", COLOR["primary"], signal_icon(content_label), content_label,
+     content_caption),
+]
 
-with c3:
-    st.markdown("#### ③ 필요 실적")
-    st.markdown(f"### {signal_icon(rev['verdict'])} {rev['verdict']}")
-    st.caption(
-        f"필요 성장률 {rev['need_growth']:+.0f}% · "
-        f"과거 중앙값 {rev['median_growth']:+.0f}%"
-    )
-
-with c4:
-    st.markdown("#### ④ 본문 의견")
-    content_label = content_assessment.get("label", "본문 미반영")
-    st.markdown(f"### {signal_icon(content_label)} {content_label}")
-    if content_assessment.get("score") is None:
-        st.caption("PDF 본문을 읽으면 리포트별 의견 차이를 반영합니다")
-    else:
-        st.caption(
-            f"논점 {len(content_view.get('theme_rows', []))}개 · "
-            f"객관분석 -{content_assessment.get('penalty', 0)}점"
-        )
+cards_html = "".join(
+    f"<div style='border:1px solid #E2E8F0;border-top:3px solid {color};border-radius:9px;"
+    f"padding:13px 15px;background:#FFFFFF;box-shadow:0 1px 2px rgba(16,24,40,0.04)'>"
+    f"<div style='font-size:12px;color:#64748B;font-weight:800;letter-spacing:0.2px'>{name}</div>"
+    f"<div style='font-size:18px;font-weight:850;color:#17202A;margin:5px 0 7px'>{icon} {verdict}</div>"
+    f"<div style='font-size:12px;color:#667085;line-height:1.45'>{caption}</div>"
+    f"</div>"
+    for name, color, icon, verdict, caption in signal_cards
+)
+st.markdown(
+    f"<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:6px 0 4px'>{cards_html}</div>",
+    unsafe_allow_html=True,
+)
 
 st.divider()
 
@@ -2032,6 +2608,33 @@ with tab1:
     with col3:
         st.metric("평균 대비", f"{dist['vs_median_pct']:+.1f}%",
                   delta=dist["position"], delta_color="off")
+
+    # 목표가가 평균 대비 어디 있는지 한눈에 보여주는 위치 막대 (-30%~+30% 범위로 정규화)
+    dev = dist["vs_median_pct"]
+    marker_pos = max(0.0, min(100.0, 50.0 + dev / 30.0 * 50.0))
+    if dev > 12:
+        marker_color, zone_text = COLOR["logic"], "평균보다 공격적"
+    elif dev < -12:
+        marker_color, zone_text = COLOR["space"], "평균보다 보수적"
+    else:
+        marker_color, zone_text = COLOR["grade_a"], "평균권"
+    st.markdown(
+        f"<div style='margin:10px 0 4px'>"
+        f"<div style='position:relative;height:34px;border-radius:8px;"
+        f"background:linear-gradient(90deg,#DCEBFB 0%,#EAF6EE 50%,#FBE4E1 100%);"
+        f"border:1px solid #E2E8F0'>"
+        f"<div style='position:absolute;left:50%;top:0;bottom:0;width:2px;background:#94A3B8'></div>"
+        f"<div style='position:absolute;left:50%;top:-18px;transform:translateX(-50%);"
+        f"font-size:11px;color:#64748B;font-weight:700'>평균</div>"
+        f"<div style='position:absolute;left:{marker_pos}%;top:50%;transform:translate(-50%,-50%);"
+        f"width:16px;height:16px;border-radius:50%;background:{marker_color};"
+        f"border:2.5px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.25)'></div>"
+        f"</div>"
+        f"<div style='display:flex;justify-content:space-between;font-size:11px;color:#94A3B8;margin-top:3px'>"
+        f"<span>보수적 −30%</span><span style='color:{marker_color};font-weight:800'>{zone_text} · {dev:+.1f}%</span><span>공격적 +30%</span>"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
 
     render_detail_block(
         "해석",
@@ -2084,7 +2687,7 @@ with tab2:
                 f"{batch_summary['best_broker']} 리포트는 현재 데이터와의 괴리가 가장 작게 계산됐습니다. "
                 f"근거: {batch_summary.get('best_reason', '')}"
             )
-        st.dataframe(pd.DataFrame(batch_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(batch_rows), width="stretch", hide_index=True)
         st.caption(
             "발행일 주가를 찾지 못한 리포트는 발행 후 수익률 계산에서 제외됩니다. "
             "목표가를 읽지 못한 리포트는 남은 여력과 현실 부합도 계산에서 제외됩니다."
@@ -2139,13 +2742,21 @@ with tab2:
             event_type = item.get("type", "")
             detail = item.get("detail", "")
             summary = item.get("summary") or summarize_post_event(item)
+            impact = item.get("impact") or explain_post_event_impact(item)
             url = item.get("url")
-            title_html = f"<a href='{url}' target='_blank'>{detail}</a>" if url else detail
+            link_html = (
+                f"<div style='font-size:12px;margin-top:2px'>"
+                f"<a href='{html.escape(url)}' target='_blank' style='color:#185FA5;text-decoration:none'>원문 공시 보기</a>"
+                f"</div>"
+                if url else ""
+            )
             st.markdown(
                 f"""
                 <div style="padding:8px 0;border-bottom:1px solid #E5EAF0">
-                  <div style="font-size:14px;color:#17202A;font-weight:800">{date} 공시 · {title_html}</div>
-                  <div style="font-size:12px;color:#667085;line-height:1.5;margin-top:3px">{summary}</div>
+                  <div style="font-size:14px;color:#17202A;font-weight:800">{html.escape(date)} {html.escape(event_type)} · {html.escape(detail)}</div>
+                  {link_html}
+                  <div style="font-size:12px;color:#667085;line-height:1.5;margin-top:4px">{html.escape(summary)}</div>
+                  <div style="font-size:12px;color:#3D4A5C;line-height:1.5;margin-top:4px;font-weight:650">{html.escape(impact)}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -2161,24 +2772,34 @@ with tab3:
         "목표가가 과거 실적 범위 안에서 설명되는지, 무리한 성장률을 요구하는지 판단합니다.",
     )
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("현재 주당이익", f"{rev['current_eps']:,.0f}원")
-        st.metric("필요 주당이익", f"{rev.get('need_eps', 0):,.0f}원")
-        st.metric("필요 성장률", f"{rev['need_growth']:+.1f}%")
+    if rev.get("verdict") == "확인 필요":
+        st.info(rev.get("limited_reason") or "필요 실적 계산에 필요한 데이터가 부족해 이 항목은 점수에서 제외했습니다.")
+        st.caption("DART 재무 자체는 유지하고, 목표가 편차·발행 이후 괴리·본문 의견 검증은 계속 계산합니다.")
+    else:
+        if rev.get("limited"):
+            st.caption(f"보조 계산 기준: {rev.get('method', '최근 분기 기준')} · {rev.get('limited_reason', '')}")
 
-    with col2:
-        st.metric("과거 평균 성장", f"{rev['avg_growth']:+.1f}%")
-        st.metric("과거 중앙값 성장", f"{rev['median_growth']:+.1f}%")
-        st.metric("변동성 계수(CV)", f"{rev.get('cv', 0):.2f}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("현재 주당이익", f"{rev['current_eps']:,.0f}원")
+            st.metric("필요 주당이익", f"{rev.get('need_eps', 0):,.0f}원")
+            st.metric("필요 성장률", f"{rev['need_growth']:+.1f}%")
 
-    render_detail_block(
-        "해석",
-        "목표가는 결국 앞으로 벌 이익에 대한 숫자입니다. 필요한 EPS 성장률이 과거 보통 수준보다 높으면 목표가 신뢰도는 낮아집니다.",
-        f"반영: {V['axes']['logic']['reason']}",
-        f"필요 {rev['need_growth']:+.1f}% / 중앙값 {rev['median_growth']:+.1f}%",
-    )
+        with col2:
+            st.metric("과거 평균 성장", f"{rev['avg_growth']:+.1f}%")
+            st.metric("과거 중앙값 성장", f"{rev['median_growth']:+.1f}%")
+            st.metric("변동성 계수(CV)", f"{rev.get('cv', 0):.2f}")
+
+        render_detail_block(
+            "해석",
+            "목표가는 결국 앞으로 벌 이익에 대한 숫자입니다. 필요한 EPS 성장률이 과거 보통 수준보다 높으면 목표가 신뢰도는 낮아집니다.",
+            f"반영: {V['axes']['logic']['reason']}",
+            f"필요 {rev['need_growth']:+.1f}% / 중앙값 {rev['median_growth']:+.1f}%",
+        )
     st.subheader("과거 성장률 추이")
+    growth_title, growth_body = explain_growth_history(rev)
+    st.markdown(f"**{growth_title}**")
+    st.caption(growth_body)
 
     growth_history = rev.get("growth_history", [])
     growth_labels = rev.get("growth_labels") or [f"구간 {idx + 1}" for idx in range(len(growth_history))]
@@ -2198,7 +2819,10 @@ with tab3:
         median_val = rev["median_growth"]
         st.metric("평균", f"{avg_val:+.1f}%")
         st.metric("중앙값", f"{median_val:+.1f}%")
-        st.metric("필요값", f"{rev['need_growth']:+.1f}%")
+        if rev.get("verdict") == "확인 필요":
+            st.metric("필요값", "계산 제외")
+        else:
+            st.metric("필요값", f"{rev['need_growth']:+.1f}%")
 
 with tab4:
     st.subheader("리포트 본문 의견이 실제 데이터와 맞는가")
@@ -2213,6 +2837,7 @@ with tab4:
         f"반영: {content_assessment.get('reason', '본문 의견 검증 미반영')}",
         f"객관분석 -{content_assessment.get('penalty', 0)}점",
     )
+    render_report_briefing(content_briefing)
 
     theme_rows = content_view.get("theme_rows", [])
     claim_rows = content_view.get("claim_rows", [])
@@ -2238,10 +2863,10 @@ with tab4:
                 "실제 데이터 대조": row.get("FinSight 대조"),
                 "판단": row.get("판정"),
             })
-        st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(display_rows), width="stretch", hide_index=True)
         if claim_rows:
             with st.expander("리포트별 본문 근거 보기"):
-                st.dataframe(pd.DataFrame(claim_rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(claim_rows), width="stretch", hide_index=True)
 
 with tab5:
     col_title, col_btn = st.columns([0.85, 0.15])
@@ -2253,7 +2878,7 @@ with tab5:
             html_report.encode("utf-8"),
             file_name=f"FinSight_{co['name']}_Report_Check.html",
             mime="text/html",
-            use_container_width=True,
+            width="stretch",
         )
     render_axis_brief(
         "목표가와 투자의견을 그대로 받아들여도 되는가",
@@ -2272,6 +2897,9 @@ with tab5:
     if batch_conclusion:
         st.markdown("#### 리포트 간 비교 결론")
         st.info(batch_conclusion)
+    if content_briefing.get("headline"):
+        st.markdown("#### 리포트에서 가져갈 핵심")
+        st.markdown(content_briefing["headline"])
     if content_view.get("summary"):
         st.markdown("#### 본문 의견 검증 결론")
         st.info(content_view["summary"])
@@ -2304,24 +2932,24 @@ with tab6:
     st.markdown(f"**{formula['text']}**")
 
     st.markdown("#### 배점 기준")
-    st.dataframe(pd.DataFrame(build_scoring_rulebook(A)), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(build_scoring_rulebook(A)), width="stretch", hide_index=True)
 
     st.markdown("#### 점수 계산")
-    st.dataframe(pd.DataFrame(build_score_audit(A)), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(build_score_audit(A)), width="stretch", hide_index=True)
 
     st.markdown("#### 객관분석·발행 후 업데이트")
-    st.dataframe(pd.DataFrame(build_update_audit(A)), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(build_update_audit(A)), width="stretch", hide_index=True)
 
     st.markdown("#### 원자료 연결")
-    st.dataframe(pd.DataFrame(build_source_audit(A)), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(build_source_audit(A)), width="stretch", hide_index=True)
 
     st.markdown("#### 자료 흐름")
-    st.dataframe(pd.DataFrame(build_data_source_logic(A)), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(build_data_source_logic(A)), width="stretch", hide_index=True)
 
     kpi_snapshot = build_kpi_snapshot(A)
     if not kpi_snapshot.empty:
         st.markdown("#### DART 재무 스냅샷")
-        st.dataframe(kpi_snapshot, use_container_width=True, hide_index=True)
+        st.dataframe(kpi_snapshot, width="stretch", hide_index=True)
         with st.expander("더 자세히 보고 싶어요 — 매출·마진·현금흐름 흐름 보기"):
             kpis_detail = A.get("kpis")
             st.caption(
