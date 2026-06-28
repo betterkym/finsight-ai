@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import datetime as dt
 import contextlib
+import hashlib
 import html
 import io
+import json
 import os
 import re
+import time
 import zipfile
 from functools import lru_cache
 from pathlib import Path
@@ -60,6 +63,52 @@ ECOS_BASE = "https://ecos.bok.or.kr/api/StatisticSearch"
 NAVER_NEWS_BASE = "https://openapi.naver.com/v1/search/news.json"
 NAVER_BLOG_BASE = "https://openapi.naver.com/v1/search/blog.json"
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
+_CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache" / "finsight_data"
+_DART_CACHE_DIR = _CACHE_DIR / "dart"
+
+
+def _ensure_cache_dir(path: Path) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+
+def _cache_key(endpoint: str, params: dict) -> str:
+    payload = json.dumps({"endpoint": endpoint, "params": params}, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _read_json_cache(path: Path) -> dict | None:
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return None
+
+
+def _write_json_cache(path: Path, payload: dict) -> None:
+    try:
+        _ensure_cache_dir(path.parent)
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _request_get(url: str, *, params: dict | None = None, timeout: int = 30, retries: int = 2) -> requests.Response:
+    """GET with a small retry budget for public data APIs."""
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            response = requests.get(url, params=params, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(0.5 * (attempt + 1))
+    raise last_exc or requests.RequestException("request failed")
 
 REPORTS = {1: "11013", 2: "11012", 3: "11014", 4: "11011"}
 REPORT_LABELS = {1: "1Q", 2: "2Q", 3: "3Q", 4: "4Q"}
@@ -108,16 +157,24 @@ def _number(value) -> float | None:
 def _dart_get(endpoint: str, **params) -> dict:
     if not DART_API_KEY:
         raise RuntimeError("DART_API_KEY가 없습니다. .env에 발급 키를 입력해 주세요.")
+    safe_params = dict(params)
+    cache_path = _DART_CACHE_DIR / f"{_cache_key(endpoint, safe_params)}.json"
     try:
-        response = requests.get(
-            f"{DART_BASE}/{endpoint}", params={"crtfc_key": DART_API_KEY, **params}, timeout=30
+        response = _request_get(
+            f"{DART_BASE}/{endpoint}",
+            params={"crtfc_key": DART_API_KEY, **params},
+            timeout=30,
+            retries=2,
         )
-        response.raise_for_status()
     except requests.RequestException as exc:
+        cached = _read_json_cache(cache_path)
+        if cached is not None:
+            return cached
         raise RuntimeError("DART 네트워크 요청에 실패했습니다. 연결 상태를 확인해 주세요.") from exc
     payload = response.json()
     if payload.get("status") not in ("000", None):
         raise RuntimeError(payload.get("message", "DART 요청에 실패했습니다."))
+    _write_json_cache(cache_path, payload)
     return payload
 
 
@@ -125,16 +182,28 @@ def _dart_get(endpoint: str, **params) -> dict:
 def _corp_codes() -> dict[str, dict[str, str]]:
     if not DART_API_KEY:
         return {}
+    cache_path = _DART_CACHE_DIR / "corpCode.xml.zip"
     try:
-        response = requests.get(
-            f"{DART_BASE}/corpCode.xml", params={"crtfc_key": DART_API_KEY}, timeout=30
+        response = _request_get(
+            f"{DART_BASE}/corpCode.xml",
+            params={"crtfc_key": DART_API_KEY},
+            timeout=30,
+            retries=2,
         )
-        response.raise_for_status()
+        content = response.content
+        try:
+            _ensure_cache_dir(cache_path.parent)
+            cache_path.write_bytes(content)
+        except Exception:
+            pass
     except requests.RequestException as exc:
-        raise RuntimeError("DART 기업코드 목록을 불러오지 못했습니다.") from exc
+        try:
+            content = cache_path.read_bytes()
+        except Exception:
+            raise RuntimeError("DART 기업코드 목록을 불러오지 못했습니다.") from exc
     import xml.etree.ElementTree as ET
 
-    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
         root = ET.fromstring(archive.read("CORPCODE.xml"))
     result = {}
     for item in root.findall("list"):
@@ -332,6 +401,7 @@ def get_quarterly_financials(company: str, quarters: int = 12) -> pd.DataFrame:
     today = dt.date.today()
     start_year = today.year - (quarters // 4 + 2)
     records = []
+    transient_errors: list[str] = []
     for year in range(start_year, today.year + 1):
         previous_cumulative: dict[str, float | None] = {key: None for key in FLOW_ACCOUNTS}
         for quarter in range(1, 5):
@@ -343,6 +413,10 @@ def get_quarterly_financials(company: str, quarters: int = 12) -> pd.DataFrame:
             except RuntimeError as exc:
                 if "조회된 데이타가 없습니다" in str(exc) or "조회된 데이터가 없습니다" in str(exc):
                     continue
+                if "네트워크" in str(exc) or "불러오지 못했습니다" in str(exc):
+                    transient_errors.append(f"{year} {REPORT_LABELS[quarter]}: {exc}")
+                    if records:
+                        continue
                 raise
             values = report["values"].copy()
             for key in FLOW_ACCOUNTS:
@@ -357,6 +431,8 @@ def get_quarterly_financials(company: str, quarters: int = 12) -> pd.DataFrame:
             })
             records.append(values)
     if not records:
+        if transient_errors:
+            raise RuntimeError("DART 네트워크가 일시적으로 불안정해 분기 재무를 수집하지 못했습니다.")
         raise RuntimeError("선택한 기간의 분기 재무데이터가 없습니다.")
     return pd.DataFrame(records).sort_values(["year", "quarter"]).tail(quarters).reset_index(drop=True)
 
@@ -390,7 +466,11 @@ def get_market_beta(stock_code: str, years: int = 2) -> float | None:
 
 
 def get_current_price(stock_code: str) -> float | None:
-    """Return the latest available closing price from FinanceDataReader."""
+    """Return the latest available closing price.
+
+    Price should normally exist for listed stocks. FDR occasionally returns empty
+    frames on cloud/network hiccups, so KRX OHLCV is used as a second source.
+    """
     if not stock_code:
         return None
     try:
@@ -399,11 +479,26 @@ def get_current_price(stock_code: str) -> float | None:
         end = dt.date.today()
         start = end - dt.timedelta(days=30)
         prices = fdr.DataReader(stock_code, start, end)
-        if prices.empty:
-            return None
-        return float(prices["Close"].dropna().iloc[-1])
+        if prices is not None and not prices.empty and "Close" in prices:
+            close = prices["Close"].dropna()
+            if not close.empty:
+                return float(close.iloc[-1])
     except Exception:
-        return None
+        pass
+    try:
+        from pykrx import stock
+
+        end = dt.date.today()
+        start = end - dt.timedelta(days=45)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            frame = stock.get_market_ohlcv(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), stock_code)
+        if frame is not None and not frame.empty and "종가" in frame:
+            close = frame.sort_index()["종가"].dropna()
+            if not close.empty:
+                return float(close.iloc[-1])
+    except Exception:
+        pass
+    return None
 
 
 def _prior_report_periods(year: int, quarter: int, limit: int = 8) -> list[tuple[int, int]]:

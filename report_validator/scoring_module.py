@@ -54,9 +54,13 @@ def score_time(timeline: dict) -> dict:
     if timeline["supply_gap"]:
         base -= 10
         deductions.append(timeline.get("supply_basis") or f"외국인 {timeline['foreign_net']:+}억원 순매도")
-    if timeline["soak_pct"] > 70:
+    soak_pct = timeline.get("soak_pct")
+    if soak_pct is None:
+        base -= 4
+        deductions.append("발행일 종가 확인 불가")
+    elif soak_pct > 70:
         base -= 5
-        deductions.append(f"상승여력 {timeline['soak_pct']}% 이미 소진")
+        deductions.append(f"상승여력 {soak_pct}% 이미 소진")
     base = max(base, 0)
     note = "발행 시점 정합성 양호" if not deductions else " · ".join(deductions)
     return {"score": base, "max": 30, "reason": note}

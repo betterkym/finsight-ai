@@ -65,7 +65,7 @@ st.markdown("<div class='fs-shell'>", unsafe_allow_html=True)
 st.markdown("<div class='fs-kicker'>FinSight</div>", unsafe_allow_html=True)
 title_col, nav_col = st.columns([4.8, 1.2])
 with title_col:
-    st.markdown("<div class='fs-title'>FinSight 리포트 신뢰도 검증</div>", unsafe_allow_html=True)
+    st.markdown("<div class='fs-title'>증권사 리포트, 지금도 믿어도 될까?</div>", unsafe_allow_html=True)
 with nav_col:
     st.markdown("<div class='fs-nav'>", unsafe_allow_html=True)
     if st.button("Analyst Mode", width="stretch"):
@@ -73,7 +73,7 @@ with nav_col:
         st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 st.markdown(
-    "<div class='fs-lead'>증권사 리포트를 그대로 믿기 전에, DART 재무·공시와 KRX 주가·수급, "
+    "<div class='fs-lead'>FinSight는 증권사 리포트를 그대로 믿기 전에, DART 재무·공시와 KRX 주가·수급, "
     "증권사 목표가 평균, 업로드 PDF 본문, 발행 이후 공시·뉴스·지분 변동을 한 번 더 대조합니다. "
     "목표가와 투자의견을 어느 정도 신뢰할 수 있는지 점수화하고 현재 주가와의 차이를 해석합니다.</div>",
     unsafe_allow_html=True,

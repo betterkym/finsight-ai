@@ -26,6 +26,11 @@ def _num(value):
         return None
 
 
+def _pct(value) -> str:
+    number = _num(value)
+    return "N/A" if number is None else f"{number:+.1f}%"
+
+
 # Evidence tiers, ranked. Lower rank = harder evidence.
 _TIER_RANK = {
     "Primary filing": 0, "Primary filing data": 0, "Primary filing text": 0,
@@ -344,24 +349,42 @@ def interpret_price_action(
     operating_up = sum(1 for v in operating_axes if v > 0)
     operating_down = sum(1 for v in operating_axes if v < 0)
     price_weak = (ret_3m is not None and ret_3m < -5) or (drawdown is not None and drawdown < -12)
+    operating_bits = []
+    if rev_yoy is not None: operating_bits.append(f"매출 전년 동기 대비 {_pct(rev_yoy)}")
+    if op_yoy is not None: operating_bits.append(f"영업이익 전년 동기 대비 {_pct(op_yoy)}")
+    if opm_yoy is not None: operating_bits.append(f"OPM 전년 동기 대비 {_pct(opm_yoy)}p")
+    price_bits = []
+    if ret_3m is not None: price_bits.append(f"최근 3개월 주가 {_pct(ret_3m)}")
+    if drawdown is not None: price_bits.append(f"52주 고점 대비 {_pct(drawdown)}")
 
     attribution = []
 
     # 1) Earnings axis
     if operating_axes:
         if operating_up >= operating_down:
-            earn_read = "최근 분기 실적은 개선 흐름입니다"
+            if price_weak:
+                earn_read = (
+                    f"최근 분기 숫자는 {' · '.join(operating_bits)}로 개선 쪽입니다. "
+                    f"그런데 가격은 {' · '.join(price_bits) if price_bits else '약세'}라서, 이번 주가 괴리를 실적 악화 하나로 설명하긴 어렵습니다."
+                )
+                earn_impact = "하락 원인으로 보기 어려움"
+            else:
+                earn_read = (
+                    f"최근 분기 숫자는 {' · '.join(operating_bits)}로 개선 쪽이고, 주가 흐름도 크게 어긋나지 않습니다."
+                )
+                earn_impact = "실적과 가격 흐름이 대체로 일치"
             earn_weight = "Low" if price_weak else "Aligned"
         else:
-            earn_read = "매출·이익·마진 중 일부가 실제로 약해졌습니다"
+            earn_read = (
+                f"최근 분기 숫자는 {' · '.join(operating_bits)}입니다. "
+                "매출·이익·마진 중 약해진 항목이 있어 주가 약세를 실적 부담으로도 설명할 수 있습니다."
+            )
             earn_weight = "High"
-        bits = []
-        if rev_yoy is not None: bits.append(f"매출 {rev_yoy:+.1f}%")
-        if op_yoy is not None: bits.append(f"영업이익 {op_yoy:+.1f}%")
-        if opm_yoy is not None: bits.append(f"OPM {opm_yoy:+.1f}%p")
+            earn_impact = "가격 부담 요인"
         attribution.append({
             "driver": "실적(펀더멘털)", "weight": earn_weight,
-            "reading": earn_read, "evidence": " · ".join(bits) or "데이터 부족",
+            "impact_label": earn_impact,
+            "reading": earn_read, "evidence": " · ".join(operating_bits) or "데이터 부족",
             "evidence_level": "1차 공시",
         })
 
@@ -371,17 +394,20 @@ def interpret_price_action(
         med = float(np.median(surprises))
         if price_weak and med > 0:
             exp_read = (
-                f"영업이익이 컨센서스를 {med:+.1f}% 상회했는데도 주가가 약합니다. "
-                "시장은 이번 호실적 자체보다 그 이후에도 같은 속도로 좋아질 수 있는지를 더 의심하고 있습니다. "
-                "그래서 목표가와 현재가의 차이는 '좋은 실적을 몰라서'가 아니라, 이미 반영된 기대를 다시 낮추는 과정으로 보는 쪽이 맞습니다."
+                f"영업이익이 컨센서스를 {_pct(med)} 상회했는데도 주가가 약했습니다. "
+                "이 조합은 시장이 이번 호실적 자체보다 다음 분기에도 같은 속도가 유지될지를 더 의심했다는 뜻에 가깝습니다. "
+                "따라서 목표가와 현재가의 차이를 단순 저평가로 보기보다, 먼저 반영됐던 기대가 낮아진 구간으로 봅니다."
             )
             exp_weight = "High"
+            exp_impact = "기대치 재조정 의심"
         else:
-            exp_read = f"실적이 컨센서스 대비 {med:+.1f}% 수준으로 기대 괴리는 제한적입니다"
+            exp_read = f"실적은 컨센서스 대비 {_pct(med)} 수준입니다. 가격과 기대치 사이의 큰 엇갈림은 제한적으로 봅니다."
             exp_weight = "Medium"
+            exp_impact = "큰 괴리 제한"
         attribution.append({
             "driver": "기대치(멀티플 디레이팅)", "weight": exp_weight,
-            "reading": exp_read, "evidence": f"브로커 컨센서스 대비 영업이익 {med:+.1f}%",
+            "impact_label": exp_impact,
+            "reading": exp_read, "evidence": f"브로커 컨센서스 대비 영업이익 {_pct(med)}",
             "evidence_level": "리서치 추정",
         })
 
@@ -398,11 +424,13 @@ def interpret_price_action(
         flow_read = (
             f"{row.get('reporter') or '주요주주'}의 보유비율이 {rc:+.2f}%p"
             f"{f' ({shr:+,.0f}주)' if shr is not None else ''} 줄었습니다. "
-            "이 정도의 지분 감소는 회사의 실적 방향과 별개로 단기 매물 부담을 만듭니다. "
-            "따라서 리포트 목표가가 높아도, 이 매도 압력이 해소되기 전에는 주가가 목표가 쪽으로 바로 붙는다고 보기 어렵습니다."
+            "이건 의견이나 뉴스가 아니라 대량보유 공시로 확인되는 실제 지분 감소입니다. "
+            "실적이 좋아도 이런 매도 물량이 나오면 가격은 목표가보다 수급을 먼저 반영할 수 있습니다. "
+            "이후 추가 지분 감소가 멈추거나 KRX 수급에서 순매도가 둔화·순매수 전환으로 바뀌기 전까지는, 목표가가 높다는 사실만으로 주가가 바로 따라간다고 보기 어렵습니다."
         )
         attribution.append({
             "driver": "수급(기관/대주주)", "weight": "High",
+            "impact_label": "가격 압박 요인",
             "reading": flow_read, "evidence": f"DART 대량보유: {row.get('report_type','')} {rc:+.2f}%p",
             "evidence_level": "1차 공시", "url": row.get("url"),
         })
@@ -410,6 +438,7 @@ def interpret_price_action(
     if foreign is not None:
         attribution.append({
             "driver": "수급(외국인)", "weight": "Medium",
+            "impact_label": "시장 반응 보조 단서",
             "reading": f"외국인 보유율이 {foreign:+.2f}%p 변동했습니다. 매도 후 재유입이면 저점 신호로, 추세 이탈이면 부담으로 읽습니다.",
             "evidence": f"외국인 보유율 {foreign:+.2f}%p", "evidence_level": "보도 정황",
         })
@@ -424,6 +453,7 @@ def interpret_price_action(
         ref = (facility[0].get("title", "").strip() if facility else facility_driver.get("fact"))
         attribution.append({
             "driver": "성장 옵션·실행 지연", "weight": "Medium",
+            "impact_label": "기대가 숫자로 넘어가기 전 단계",
             "reading": (
                 "증설은 중장기 공급능력을 키우지만, 투자비 증가·준공 지연·초기 가동률은 단기 FCF와 멀티플에 부담입니다. "
                 "기대가 숫자(해외 매출·가동률)로 확인되기까지 시장은 프리미엄을 유보합니다."
@@ -436,13 +466,14 @@ def interpret_price_action(
     # Verdict — the headline distinction the request asks for.
     high_nonfundamental = [a for a in attribution if a["driver"] != "실적(펀더멘털)" and a["weight"] == "High"]
     if price_weak and operating_up >= operating_down and high_nonfundamental:
-        verdict = "실적 때문만은 아닙니다 — 수급·기대치 조정이 더 크게 작용한 구간"
+        verdict = "실적은 버텼지만 가격은 다른 이유로 눌린 구간"
         drivers = ", ".join(a["driver"] for a in high_nonfundamental)
+        operating_text = " · ".join(operating_bits) if operating_bits else "최근 분기 실적은 크게 무너지지 않았고"
+        price_text = " · ".join(price_bits) if price_bits else "주가는 약세"
         thesis = (
-            "최근 분기 실적은 무너지지 않았습니다. 그런데도 주가가 약한 이유는 시장이 실적 숫자보다 "
-            f"{drivers}를 더 크게 반영하고 있기 때문입니다. "
-            "이 경우 현재가와 목표가의 차이는 단순한 저평가라기보다, 이미 반영됐던 기대가 낮아지고 매도 물량이 가격을 누르는 구간으로 해석합니다. "
-            "따라서 리포트의 목표가가 논리적으로 가능하더라도, 기대치 조정과 수급 부담이 풀리기 전까지 그 목표가가 곧바로 주가 상승으로 이어진다고 보기는 어렵습니다."
+            f"최근 분기 실적은 {operating_text}입니다. 그런데 {price_text}입니다. "
+            f"그래서 이번 괴리는 회사 실적이 무너져서라기보다 {drivers} 요인이 가격을 먼저 누른 구간으로 봅니다. "
+            "현재가와 목표가 차이는 단순 저평가라기보다, 리포트가 기대한 개선이 이미 가격에 반영됐다가 낮아졌거나 실제 매도 물량이 아직 남아 있는 상태로 해석합니다."
         )
     elif price_weak and operating_down > operating_up:
         verdict = "주가 약세를 수급만으로 설명하기 어려운 펀더멘털 경계 구간"

@@ -53,7 +53,13 @@ from core.mode_views import build_tracker_table, build_peer_benchmark
 from core import data_collector as dc
 from analyst_workbench.ui_components import financial_trend_chart
 from analyst_workbench.interpretation import interpret_price_action
-from report_validator.timeline_module import build_post_publish_timeline, fetch_foreign_flow, fetch_price_at_date
+from report_validator.timeline_module import (
+    build_post_publish_timeline,
+    fetch_foreign_flow,
+    fetch_price_at_date,
+    fetch_price_at_date_info,
+    fetch_investor_flow_since,
+)
 from report_validator.scoring_module import build_report_verdict
 from report_validator.report_assessor import build_alignment_assessment, apply_alignment_to_verdict
 from report_validator.retail_report import generate_retail_html_report, generate_retail_pdf_report
@@ -93,7 +99,7 @@ if st.query_params.get("view") == "analyst":
 # 실데이터 수집 (DART) — 실패 시 None 반환, 데모로 폴백
 # ──────────────────────────────────────────────
 @st.cache_data(show_spinner="📡 DART 재무 수집 중...")
-def fetch_real_financials(company_name: str) -> dict | None:
+def fetch_real_financials(company_name: str, cache_version: int = 5) -> dict | None:
     """종목명으로 실제 DART 재무·현재가·발행주식수를 수집한다.
 
     DART 재무가 수집되면 실데이터로 인정한다. 필요 실적 역산 가능 여부는
@@ -108,9 +114,10 @@ def fetch_real_financials(company_name: str) -> dict | None:
             return None
 
         code = info["stock_code"]
-        price = dc.get_current_price(code)
-        if not price:
-            return None
+        try:
+            price = dc.get_current_price(code)
+        except Exception:
+            price = None
         shares = None
         try:
             if {"year", "quarter"}.issubset(fin.columns):
@@ -132,10 +139,11 @@ def fetch_real_financials(company_name: str) -> dict | None:
             "company_name": info["company"],
             "stock_code": code,
             "financials": fin,
-            "current_price": float(price),
+            "current_price": float(price) if price else None,
             "shares_outstanding": float(shares or 0),
             "financial_status": "실제 DART 재무",
             "share_status": "DART 발행주식수 연결" if shares else "발행주식수 미확인",
+            "price_status": "현재가 연결" if price else "현재가 미확인 · DART 재무는 연결됨",
         }
     except Exception:
         return None
@@ -149,8 +157,14 @@ def diagnose_real_financials(company_name: str) -> list[dict]:
     """
     steps: list[dict] = []
 
-    def add(name: str, ok: bool, detail: str) -> None:
-        steps.append({"단계": name, "상태": "✅ 정상" if ok else "❌ 실패", "내용": detail})
+    def add(name: str, ok: bool, detail: str, *, warning: bool = False) -> None:
+        if ok:
+            status = "✅ 정상"
+        elif warning:
+            status = "⚠️ 보조값 사용"
+        else:
+            status = "❌ 확인 필요"
+        steps.append({"단계": name, "상태": status, "내용": detail})
 
     # ① Secrets에 키가 들어왔는지(원천) ② 코드가 읽는지(최종) 분리 진단
     secret_keys = []
@@ -190,15 +204,26 @@ def diagnose_real_financials(company_name: str) -> list[dict]:
         n = 0 if fin is None else len(fin)
         add("분기 재무(DART)", n >= 4, f"{n}분기 수집" if n else "재무가 비어 있음")
     except Exception as e:
-        add("분기 재무(DART)", False, f"오류: {e}")
+        is_network = "네트워크" in str(e) or "일시" in str(e) or "불러오지" in str(e)
+        add(
+            "분기 재무(DART)",
+            False,
+            (
+                "OpenDART 응답이 일시적으로 불안정합니다. 앱은 보조 재무값으로 계속 계산하고, "
+                "DART가 다시 연결되면 실제 재무로 자동 전환됩니다."
+                if is_network else f"오류: {e}"
+            ),
+            warning=is_network,
+        )
 
     try:
         price = dc.get_current_price(code)
         add("현재가(FinanceDataReader)", bool(price),
             f"{price:,.0f}원" if price
-            else "가격 조회 실패 — 클라우드 IP에서 외부 시세 접근이 막혔을 수 있습니다")
+            else "가격 조회 미확인 — 가격 관련 계산만 보조값으로 유지합니다",
+            warning=not bool(price))
     except Exception as e:
-        add("현재가(FinanceDataReader)", False, f"오류: {e}")
+        add("현재가(FinanceDataReader)", False, f"가격 조회 오류: {e}", warning=True)
 
     return steps
 
@@ -241,12 +266,22 @@ def cached_price_at_date(stock_code: str, ymd: str) -> float | None:
     return fetch_price_at_date(stock_code, ymd)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_price_at_date_info(stock_code: str, ymd: str) -> dict | None:
+    return fetch_price_at_date_info(stock_code, ymd)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_investor_flow_since(stock_code: str, ymd: str) -> dict | None:
+    return fetch_investor_flow_since(stock_code, ymd)
+
+
 def build_price_gap_read(price_action: dict) -> list[dict]:
     rows = []
     for item in (price_action or {}).get("attribution", []):
         rows.append({
             "driver": item.get("driver", ""),
-            "weight": item.get("weight", ""),
+            "impact_label": item.get("impact_label", ""),
             "reading": item.get("reading", ""),
             "evidence": item.get("evidence", ""),
             "url": item.get("url", ""),
@@ -655,6 +690,10 @@ OVERSEAS_CONCRETE_WORDS = [
     "매장", "법인", "자회사", "공장", "투자", "인수", "취득", "승인", "허가",
     "인허가", "품목허가", "수출액", "해외매출", "매출", "실적", "선적",
 ]
+OVERSEAS_REVENUE_WORDS = ["해외매출", "수출액", "수출 실적", "매출", "실적", "판매량", "억원", "백만", "YoY", "%"]
+OVERSEAS_EXECUTION_WORDS = ["계약", "공급", "수주", "MOU", "협약", "판매", "유통", "출시", "입점", "매장", "선적"]
+OVERSEAS_ACCESS_WORDS = ["FDA", "CE", "인허가", "품목허가", "허가", "승인", "인증"]
+OVERSEAS_BASE_WORDS = ["법인", "자회사", "공장", "거점", "투자", "인수", "취득"]
 EXPECTATION_ONLY_WORDS = [
     "전망", "기대", "목표가", "상향", "관심", "수혜", "모멘텀", "가능성",
     "주목", "리레이팅", "증권", "리포트", "분석", "추천",
@@ -693,20 +732,57 @@ def _is_expectation_only_context(text: str) -> bool:
     return has_expectation and not has_concrete
 
 
-def _overseas_topic_label(text: str) -> str:
+def _is_weak_overseas_hit(item: dict, text: str) -> bool:
+    title = str(item.get("title") or item.get("detail") or item.get("report_nm") or "")
+    if not any(word in title for word in ("대량보유", "주식등", "지분", "임원")):
+        return False
+    strong_words = [
+        "해외매출", "수출액", "수출", "미국", "중국", "일본", "유럽", "북미",
+        "글로벌", "FDA", "CE", "품목허가", "현지", "해외 법인", "해외법인",
+    ]
     lowered = str(text or "").lower()
-    topics = []
-    if any(word.lower() in lowered for word in ("계약", "공급", "수주", "MOU", "협약")):
-        topics.append("공급·계약")
-    if any(word.lower() in lowered for word in ("판매", "유통", "출시", "입점", "매장", "면세")):
-        topics.append("해외 판매망")
-    if any(word.lower() in lowered for word in ("허가", "승인", "FDA", "CE", "인허가", "품목허가")):
-        topics.append("인허가")
-    if any(word.lower() in lowered for word in ("법인", "자회사", "공장", "투자", "인수", "취득")):
-        topics.append("해외 거점·투자")
-    if any(word.lower() in lowered for word in ("수출액", "해외매출", "매출", "실적", "선적", "수출")):
-        topics.append("수출·매출")
-    return " · ".join(topics[:2]) if topics else "해외 성장 단서"
+    return not any(word.lower() in lowered for word in strong_words)
+
+
+def _context_summary_text(item: dict, limit: int = 105) -> str:
+    for key in ("summary", "description", "reason", "detail", "title", "report_nm"):
+        value = item.get(key)
+        if value:
+            cleaned = html.unescape(re.sub(r"<[^>]+>", " ", str(value)))
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if cleaned:
+                return _short_summary(cleaned, limit)
+    return "원문 요약을 확인하지 못했습니다."
+
+
+def _has_numeric_overseas_evidence(text: str) -> bool:
+    lowered = str(text or "").lower()
+    has_sales_word = any(word.lower() in lowered for word in ("해외매출", "수출액", "매출", "실적", "판매량", "선적"))
+    has_number = bool(re.search(r"\d[\d,.]*\s*(억|조|만|%|달러|원|개|건|톤|대|명)", str(text or "")))
+    return has_sales_word and has_number
+
+
+def _overseas_evidence_kind(text: str) -> tuple[str, int]:
+    lowered = str(text or "").lower()
+    if _has_numeric_overseas_evidence(text):
+        return "매출로 확인되는 근거", 0
+    if any(word.lower() in lowered for word in OVERSEAS_EXECUTION_WORDS):
+        return "계약·판매망 실행 근거", 1
+    if any(word.lower() in lowered for word in OVERSEAS_ACCESS_WORDS):
+        return "인허가·시장진입 근거", 2
+    if any(word.lower() in lowered for word in OVERSEAS_BASE_WORDS):
+        return "해외 거점·투자 근거", 3
+    if _is_expectation_only_context(text):
+        return "기대감·관심 근거", 5
+    return "해외 성장 관련 정황", 4
+
+
+def _overseas_item_read(item: dict) -> str:
+    title = _context_title(item, 34)
+    summary = _context_summary_text(item, 98)
+    if summary and summary != title:
+        return f"{item.get('source', '자료')} '{title}'은 {summary}"
+    return f"{item.get('source', '자료')} '{title}'에서 관련 내용이 확인됩니다"
 
 
 def _build_overseas_context_brief(context: dict) -> dict:
@@ -720,15 +796,25 @@ def _build_overseas_context_brief(context: dict) -> dict:
             text = _plain_context_text(item)
             if not text or not _has_overseas_signal(text):
                 continue
+            if _is_weak_overseas_hit(item, text):
+                continue
+            kind, rank = _overseas_evidence_kind(text)
             candidates.append({
                 "source": source,
                 "title": _context_title(item),
-                "topic": _overseas_topic_label(text),
+                "kind": kind,
+                "rank": rank,
+                "read": _overseas_item_read({**item, "source": source}),
                 "expectation_only": _is_expectation_only_context(text),
             })
 
-    concrete = [item for item in candidates if not item["expectation_only"]]
-    expectation = [item for item in candidates if item["expectation_only"]]
+    candidates = sorted(candidates, key=lambda item: item["rank"])
+    revenue = [item for item in candidates if item["kind"] == "매출로 확인되는 근거"]
+    execution = [item for item in candidates if item["kind"] == "계약·판매망 실행 근거"]
+    access = [item for item in candidates if item["kind"] == "인허가·시장진입 근거"]
+    base = [item for item in candidates if item["kind"] == "해외 거점·투자 근거"]
+    concrete = revenue + execution + access + base
+    expectation = [item for item in candidates if item["rank"] >= 5]
 
     if not candidates:
         if total_count:
@@ -750,34 +836,34 @@ def _build_overseas_context_brief(context: dict) -> dict:
             ),
         }
 
-    top_items = (concrete or candidates)[:3]
-    topics = []
-    for item in top_items:
-        if item["topic"] not in topics:
-            topics.append(item["topic"])
-    examples = "; ".join(
-        f"{item['source']} '{item['title']}'에서 {item['topic']} 단서"
-        for item in top_items[:2]
-    )
-
-    brief = (
-        f"발행 이후 자료 {total_count}건 중 해외 관련 단서는 {len(candidates)}건이고, "
-        f"그중 실제 변화 단서로 볼 만한 것은 {len(concrete)}건입니다. "
-        f"핵심은 {', '.join(topics[:3])} 쪽입니다"
-    )
-    if examples:
-        brief += f" (예: {examples}). "
+    if revenue:
+        top_items = revenue[:2]
+        brief = "해외 성장 주장을 뒷받침하는 가장 강한 근거는 매출·실적 숫자입니다. "
+        brief += " ".join(item["read"] for item in top_items)
+        brief += " 이 경우 리포트의 해외 성장 가정은 일부 확인된 것으로 봅니다."
+    elif execution:
+        top_items = execution[:2]
+        brief = "아직 해외 매출 규모가 숫자로 분리 확인되지는 않았지만, 계약·판매망 같은 실행 근거는 있습니다. "
+        brief += " ".join(item["read"] for item in top_items)
+        brief += " 그래서 해외 성장은 단순 기대감보다는 한 단계 진전된 근거로 보되, 목표가에 전부 반영하려면 실제 매출 기여가 필요합니다."
+    elif access or base:
+        top_items = (access + base)[:2]
+        brief = "확인된 자료는 해외 매출 자체보다 시장 진입 준비나 거점 확보에 가깝습니다. "
+        brief += " ".join(item["read"] for item in top_items)
+        brief += " 이건 성장 옵션을 보강하지만, 아직 매출로 연결됐다고 보기는 어렵습니다."
     else:
-        brief += ". "
-    if concrete:
-        brief += "이런 내용은 리포트의 해외 성장 가정을 보강할 수 있지만, 매출 규모가 숫자로 확인되기 전까지는 목표가에 전부 반영하긴 어렵습니다."
-    else:
-        brief += "다만 대부분이 전망·관심성 기사에 가까워, 해외 매출이 실제로 늘었다는 근거로는 낮게 반영합니다."
+        top_items = candidates[:2]
+        brief = "해외 관련 언급은 있지만 대부분 기대감이나 관심성 정황에 가깝습니다. "
+        if top_items:
+            brief += " ".join(item["read"] for item in top_items)
+        brief += " 따라서 해외 매출이 실제로 늘었다는 근거로는 낮게 반영합니다."
     if expectation:
-        brief += f" 전망성 표현이 중심인 {len(expectation)}건은 기대감 확인 자료로만 봅니다."
+        brief += f" 기대감 중심 자료 {len(expectation)}건은 매출 근거가 아니라 시장 관심도 확인 자료로만 둡니다."
     return {
         "signal_count": len(candidates),
         "concrete_count": len(concrete),
+        "revenue_count": len(revenue),
+        "execution_count": len(execution),
         "brief": brief,
     }
 
@@ -852,7 +938,8 @@ def analyze_report_content_batch(analysis: dict) -> dict:
     if not reports and (analysis.get("report") or {}).get("text_excerpt"):
         reports = [analysis["report"]]
     if not reports:
-        return {"theme_rows": [], "claim_rows": [], "summary": "", "report_count": 0}
+        return {"theme_rows": [], "claim_rows": [], "summary": "", "report_count": 0, "mode": "none"}
+    mode = "single" if len(reports) == 1 else "multi"
     theme_rows = []
     claim_rows = []
     for rule in REPORT_THEME_RULES:
@@ -881,7 +968,7 @@ def analyze_report_content_batch(analysis: dict) -> dict:
             continue
         unique_stances = {stance for stance in stances}
         stance_counts = {stance: stances.count(stance) for stance in sorted(unique_stances)}
-        if "긍정" in unique_stances and "부담" in unique_stances:
+        if len(reports) >= 2 and "긍정" in unique_stances and "부담" in unique_stances:
             read = "리포트 간 해석이 갈립니다."
             verdict = "의견 차이"
         elif "긍정" in unique_stances:
@@ -916,7 +1003,12 @@ def analyze_report_content_batch(analysis: dict) -> dict:
         if _objective_read_has_tension(row.get("FinSight 대조", ""))
     ]
     summary_bits = []
-    if common:
+    if mode == "single":
+        summary_bits.append(
+            "인식된 리포트 본문이 1개라 증권사 간 의견 차이는 계산하지 않았습니다. "
+            "이번 탭은 해당 리포트가 좋게 본 전제가 DART 재무, 발행 이후 주가·수급, 공시와 맞는지 보는 방식입니다."
+        )
+    elif common:
         summary_bits.append(
             f"여러 리포트가 공통으로 기대는 전제는 {', '.join(common[:3])}입니다. "
             "따라서 목표가 신뢰도는 이 전제들이 실제 숫자로 확인되는지에 달려 있습니다."
@@ -942,6 +1034,7 @@ def analyze_report_content_batch(analysis: dict) -> dict:
         "claim_rows": claim_rows[:18],
         "summary": " ".join(summary_bits),
         "report_count": len(reports),
+        "mode": mode,
     }
 
 
@@ -967,7 +1060,8 @@ def assess_report_content_consistency(content: dict) -> dict:
             "optimistic_gap_count": 0,
         }
 
-    divergent = [row for row in rows if row.get("판정") == "의견 차이"]
+    report_count = int(content.get("report_count") or 0)
+    divergent = [row for row in rows if report_count >= 2 and row.get("판정") == "의견 차이"]
     optimistic_gap = [
         row for row in rows
         if (row.get("방향 분포") or {}).get("긍정", 0) > 0
@@ -1052,8 +1146,8 @@ def _theme_brief_text(row: dict, group: str) -> str:
     if group == "watch":
         if theme == "해외·수출":
             return (
-                "해외 성장 스토리는 목표가를 설명하는 중요한 근거일 수 있지만, 확인 방식이 매출 전체 증가보다 까다롭습니다. "
-                f"{objective} 그래서 해외 관련 단서가 있더라도 실제 매출 기여가 숫자로 확인되기 전까지는 목표가 신뢰도에 보수적으로 반영합니다."
+                "해외 성장은 리포트의 목표가를 밀어 올리는 핵심 전제일 수 있어서, 단순 기사량보다 근거의 성격을 봐야 합니다. "
+                f"{objective}"
             )
         if theme == "원가·비용":
             return (
@@ -1097,7 +1191,9 @@ def _claim_brief(claims: list[dict]) -> str:
 def build_report_briefing(content: dict, assessment: dict | None = None) -> dict:
     rows = content.get("theme_rows") or []
     if not rows:
-        return {"headline": "", "trusted": [], "watch": [], "contested": []}
+        return {"headline": "", "trusted": [], "watch": [], "contested": [], "mode": content.get("mode", "none")}
+    report_count = int(content.get("report_count") or 0)
+    mode = content.get("mode") or ("single" if report_count == 1 else "multi")
 
     claims_by_theme: dict[str, list[dict]] = {}
     for claim in content.get("claim_rows") or []:
@@ -1124,7 +1220,7 @@ def build_report_briefing(content: dict, assessment: dict | None = None) -> dict
             "claim": claim_text,
             "mention": row.get("언급 리포트", ""),
         }
-        if row.get("판정") == "의견 차이":
+        if report_count >= 2 and row.get("판정") == "의견 차이":
             contested.append({**item, "read": _theme_brief_text(row, "contested")})
         elif is_common and has_positive and not is_tension:
             trusted.append({**item, "read": _theme_brief_text(row, "trusted")})
@@ -1140,17 +1236,27 @@ def build_report_briefing(content: dict, assessment: dict | None = None) -> dict
     contested = contested[:2]
 
     if trusted:
-        headline = (
-            f"읽고 가져가도 되는 핵심은 {', '.join(item['title'] for item in trusted[:2])}입니다. "
-            "이 부분은 리포트들이 반복해서 짚었고, 현재 확인되는 데이터와 큰 충돌이 없습니다."
-        )
+        if report_count == 1:
+            headline = (
+                f"이 리포트에서 우선 참고할 부분은 {', '.join(item['title'] for item in trusted[:2])}입니다. "
+                "현재 확인되는 데이터와 크게 충돌하지 않는 내용입니다."
+            )
+        else:
+            headline = (
+                f"읽고 가져가도 되는 핵심은 {', '.join(item['title'] for item in trusted[:2])}입니다. "
+                "이 부분은 리포트들이 반복해서 짚었고, 현재 확인되는 데이터와 큰 충돌이 없습니다."
+            )
         if watch:
             headline += f" 다만 {', '.join(item['title'] for item in watch[:2])}은 아직 목표가 근거로 강하게 인정하기 어렵습니다."
     else:
-        headline = "현재 업로드된 리포트들에서 그대로 가져갈 만한 공통 전제는 아직 약합니다."
+        headline = (
+            "이 리포트에서 그대로 가져갈 만한 전제는 아직 약합니다."
+            if report_count == 1 else
+            "현재 업로드된 리포트들에서 그대로 가져갈 만한 공통 전제는 아직 약합니다."
+        )
         if watch:
             headline += f" 특히 {', '.join(item['title'] for item in watch[:2])}은 리포트 표현보다 보수적으로 봅니다."
-    if contested:
+    if report_count >= 2 and contested:
         headline += f" {', '.join(item['title'] for item in contested[:2])}은 증권사별 해석 차이가 있습니다."
 
     return {
@@ -1158,6 +1264,8 @@ def build_report_briefing(content: dict, assessment: dict | None = None) -> dict
         "trusted": trusted,
         "watch": watch,
         "contested": contested,
+        "mode": mode,
+        "report_count": report_count,
         "penalty": (assessment or {}).get("penalty", 0),
     }
 
@@ -1325,16 +1433,17 @@ def _batch_fit_score(
     *,
     target: float | None,
     price_at_pub: float | None,
-    current_price: float,
+    current_price: float | None,
     consensus_mean: float | None,
     opinion: str,
 ) -> tuple[float | None, str]:
-    if target is None or price_at_pub is None or current_price <= 0:
+    current = _num(current_price)
+    if target is None or price_at_pub is None or current is None or current <= 0:
         return None, "목표가 또는 발행일 주가 확인 필요"
     score = 78.0
     reasons = []
-    realized = (current_price / price_at_pub - 1) * 100
-    remaining = (target / current_price - 1) * 100
+    realized = (current / price_at_pub - 1) * 100
+    remaining = (target / current - 1) * 100
     if consensus_mean:
         gap = (target / consensus_mean - 1) * 100
         gap_penalty = min(28, abs(gap) * 0.65)
@@ -1362,7 +1471,7 @@ def build_batch_post_publish_analysis(
     reports: list[dict],
     *,
     stock_code: str,
-    current_price: float,
+    current_price: float | None,
     consensus: dict | None,
     fallback_price_at_pub: float | None,
 ) -> dict:
@@ -1373,14 +1482,15 @@ def build_batch_post_publish_analysis(
     raw_rows = []
     for item in comparable_reports(reports):
         pub_date = item.get("pub_date") or ""
+        price_info = None
         price_at_pub = None
         if pub_date and stock_code:
-            price_at_pub = cached_price_at_date(stock_code, pub_date)
-        if price_at_pub is None and len(reports) == 1:
-            price_at_pub = fallback_price_at_pub
+            price_info = cached_price_at_date_info(stock_code, pub_date)
+            price_at_pub = price_info.get("price") if price_info else None
         target = _num(item.get("target_price"))
-        realized = (current_price / price_at_pub - 1) * 100 if price_at_pub else None
-        remaining = (target / current_price - 1) * 100 if target else None
+        current = _num(current_price)
+        realized = (current / price_at_pub - 1) * 100 if current and price_at_pub else None
+        remaining = (target / current - 1) * 100 if target and current else None
         upside_at_pub = (target / price_at_pub - 1) * 100 if target and price_at_pub else None
         dist_gap = (target / consensus_mean - 1) * 100 if target and consensus_mean else None
         score, reason = _batch_fit_score(
@@ -1396,6 +1506,7 @@ def build_batch_post_publish_analysis(
             "투자의견": item.get("opinion") or "",
             "목표가": _fmt_won(target),
             "발행일 주가": _fmt_won(price_at_pub),
+            "종가 기준일": (price_info or {}).get("date") or "확인 불가",
             "발행 후 주가 변화": _fmt_pct(realized),
             "발행 당시 상승여력": _fmt_pct(upside_at_pub),
             "현재 남은 여력": _fmt_pct(remaining),
@@ -1407,7 +1518,8 @@ def build_batch_post_publish_analysis(
         raw_rows.append({**row, "_score": score, "_price_at_pub": price_at_pub, "_realized": realized})
     price_values = [row["_price_at_pub"] for row in raw_rows if row.get("_price_at_pub")]
     avg_price_at_pub = sum(price_values) / len(price_values) if price_values else None
-    avg_realized = (current_price / avg_price_at_pub - 1) * 100 if avg_price_at_pub else None
+    current = _num(current_price)
+    avg_realized = (current / avg_price_at_pub - 1) * 100 if current and avg_price_at_pub else None
     scored = [row for row in raw_rows if row.get("_score") is not None]
     best = max(scored, key=lambda row: row["_score"]) if scored else None
     return {
@@ -1671,7 +1783,7 @@ def explain_post_event_impact(item: dict) -> str:
         )
     return (
         "신뢰도 영향: 리포트 이후 새로 공개된 정보라 목표가·투자의견의 전제가 아직 유효한지 확인하는 자료입니다. "
-        "숫자 영향이 확인되면 발행 이후 괴리와 종합평가에 반영합니다."
+        "숫자 영향이 확인되면 발행 이후 괴리와 종합점검결과에 반영합니다."
     )
 
 
@@ -1781,6 +1893,208 @@ def explain_post_event_takeaway(item: dict, report: dict | None = None) -> dict:
     }
 
 
+def relation_badge_html(tone: str) -> str:
+    """Inline badge for whether a post-report event supports the report direction."""
+    tone_text = str(tone or "")
+    if tone_text in ("긍정", "핵심 확인"):
+        label, color = "+관계", "#185FA5"
+    elif tone_text == "부정":
+        label, color = "-관계", "#C0392B"
+    elif tone_text == "양면":
+        label, color = "양면", "#BA7517"
+    else:
+        label, color = "중립", "#667085"
+    return (
+        f"<span style='font-size:11px;font-weight:850;color:{color};"
+        f"margin-left:6px'>{html.escape(label)}</span>"
+    )
+
+
+def summarize_post_events_so_what(events: list[dict], report: dict | None = None) -> dict | None:
+    """Summarize the overall implication of post-report filings before listing them."""
+    if not events:
+        return None
+
+    tones = []
+    market_labels = []
+    negative_events = []
+    positive_events = []
+    mixed_events = []
+    for event in events:
+        takeaway = event.get("takeaway") or explain_post_event_takeaway(event, report)
+        tone = str(takeaway.get("tone") or "확인")
+        tones.append(tone)
+        if tone == "부정":
+            negative_events.append(event)
+        elif tone in ("긍정", "핵심 확인"):
+            positive_events.append(event)
+        elif tone == "양면":
+            mixed_events.append(event)
+        reaction = event.get("market_reaction") or {}
+        if reaction.get("label"):
+            market_labels.append(str(reaction.get("label")))
+
+    positive_report = str((report or {}).get("opinion") or "") in ("매수", "적극매수", "Buy")
+    negative_count = len(negative_events)
+    positive_count = len(positive_events)
+    mixed_count = len(mixed_events)
+    market_negative = any(any(word in label for word in ("부담", "약세", "엇갈림")) for label in market_labels)
+    market_positive = any(any(word in label for word in ("우호", "반등", "받침")) for label in market_labels)
+
+    if negative_count and negative_count >= positive_count:
+        color = "#C0392B"
+        headline = "발행 이후 확인된 변화는 리포트 방향을 바로 강화하기보다 확인 부담을 키웁니다."
+        main_event = negative_events[0].get("detail") or "부담 요인"
+        body = (
+            f"핵심은 {main_event}입니다. "
+            "이 변화는 회사의 실적 전망을 바로 부정한다기보다, 리포트의 목표가가 현재 주가에 곧바로 반영되기 어려운 이유로 봅니다."
+        )
+        if positive_report:
+            body += " 매수 리포트라면 목표가 자체보다 발행 이후 수급·공시 변화가 해소되는지를 먼저 봐야 합니다."
+    elif positive_count and not negative_count:
+        color = "#185FA5"
+        headline = "발행 이후 확인된 변화는 리포트 전제를 일부 보강합니다."
+        main_event = positive_events[0].get("detail") or "긍정 확인 항목"
+        body = (
+            f"핵심은 {main_event}입니다. "
+            "리포트가 기대한 성장·마진 방향과 같은 쪽의 후속 정보로 볼 수 있습니다. "
+            "다만 목표가 신뢰도는 주가·수급 반응까지 같이 확인해야 합니다."
+        )
+    elif mixed_count or (positive_count and negative_count):
+        color = "#BA7517"
+        headline = "발행 이후 변화는 긍정 요인과 부담 요인이 같이 있습니다."
+        body = (
+            "성장 스토리를 보강하는 항목은 있지만, 투자비·수급·반영 시점 같은 부담도 같이 확인됩니다. "
+            "이 경우 리포트의 방향성은 일부 인정하되 목표가 반영 속도는 보수적으로 봅니다."
+        )
+    else:
+        color = "#667085"
+        headline = "발행 이후 확인된 변화는 리포트 결론을 크게 뒤집지는 않습니다."
+        body = (
+            "현재 잡힌 공시들은 목표가 산식을 바로 바꾸기보다 리포트 전제가 아직 유효한지 확인하는 보조 자료에 가깝습니다."
+        )
+
+    if market_negative:
+        body += " 공시 이후 가격·수급 반응도 부담 쪽으로 확인돼 신뢰도에는 보수적으로 반영합니다."
+    elif market_positive:
+        body += " 공시 이후 가격·수급 반응은 일부 우호적으로 확인됩니다."
+
+    return {
+        "headline": headline,
+        "body": body,
+        "color": color,
+        "counts": f"+관계 {positive_count}개 · -관계 {negative_count}개 · 양면 {mixed_count}개",
+    }
+
+
+def _fmt_eok_value(value) -> str:
+    number = _num(value)
+    if number is None:
+        return "N/A"
+    direction = "+" if number > 0 else ""
+    return f"{direction}{number:,.1f}억원"
+
+
+def explain_event_market_reaction(
+    event: dict,
+    *,
+    stock_code: str | None = None,
+    current_price: float | None = None,
+) -> dict:
+    """Tie a post-report event to price and investor-flow reaction after the event."""
+    date = str(event.get("date") or "")[:10]
+    if not stock_code or not date:
+        return {
+            "label": "시장 반응 확인 불가",
+            "read": "종목코드나 공시일을 확인하지 못해 공시 이후 주가·수급 반응은 계산하지 않았습니다.",
+            "evidence": "KRX 가격·수급 미연결",
+        }
+
+    price_info = cached_price_at_date_info(stock_code, date)
+    price_at_event = _num((price_info or {}).get("price"))
+    current = _num(current_price)
+    price_return = (current / price_at_event - 1) * 100 if current and price_at_event else None
+
+    flow = cached_investor_flow_since(stock_code, date) or {}
+    foreign = _num(flow.get("foreign"))
+    institution = _num(flow.get("institution"))
+    private_fund = _num(flow.get("private_fund"))
+    pension = _num(flow.get("pension"))
+    smart_values = [value for value in (foreign, institution) if value is not None]
+    smart_flow = sum(smart_values) if smart_values else None
+
+    if price_return is None and not flow:
+        return {
+            "label": "시장 반응 확인 불가",
+            "read": "공시 이후 주가와 투자자별 수급을 연결하지 못했습니다. 이 공시는 내용 자체만 보조 근거로 둡니다.",
+            "evidence": "KRX 가격·수급 미연결",
+        }
+
+    price_str = _fmt_pct(price_return)
+    flow_parts = []
+    if foreign is not None:
+        flow_parts.append(f"외국인 {_fmt_eok_value(foreign)}")
+    if institution is not None:
+        flow_parts.append(f"기관 {_fmt_eok_value(institution)}")
+    detail_parts = []
+    if private_fund is not None:
+        detail_parts.append(f"사모 {_fmt_eok_value(private_fund)}")
+    if pension is not None:
+        detail_parts.append(f"연기금 {_fmt_eok_value(pension)}")
+    flow_text = " · ".join(flow_parts) if flow_parts else "투자자별 수급 확인 불가"
+    if detail_parts:
+        flow_text += f" ({', '.join(detail_parts)})"
+
+    price_positive = price_return is not None and price_return >= 3
+    price_negative = price_return is not None and price_return <= -3
+    flow_positive = smart_flow is not None and smart_flow > 0
+    flow_negative = smart_flow is not None and smart_flow < 0
+    if price_positive and flow_positive:
+        label = "가격·수급 모두 우호적"
+        relation = "공시 이후 시장 반응은 리포트의 긍정 전제를 일부 보강합니다."
+    elif price_negative and flow_negative:
+        label = "가격·수급 모두 부담"
+        relation = "공시 이후 시장 반응은 리포트의 긍정 전제와 엇갈립니다."
+    elif price_positive and flow_negative:
+        label = "가격 반등, 수급은 엇갈림"
+        relation = "주가는 반응했지만 외국인·기관 수급이 따라오지 않아 추세 확인은 아직 약합니다."
+    elif price_negative and flow_positive:
+        label = "가격 약세, 수급은 받침"
+        relation = "주가는 약하지만 외국인·기관이 받친 구간이라 단순 악재 반응으로만 보기는 어렵습니다."
+    else:
+        label = "뚜렷한 시장 반응 제한"
+        relation = "공시 이후 가격·수급 반응이 강하지 않아 리포트 전제를 크게 바꾸는 근거로 보기는 어렵습니다."
+
+    title = str(event.get("detail") or "")
+    if "지속가능" in title or "ESG" in title.upper() or "지배구조" in title:
+        relation = (
+            "이 공시는 목표가 산식보다 비재무 리스크 확인 자료에 가깝습니다. "
+            + relation
+        )
+    elif "기업설명회" in title or "IR" in title.upper():
+        relation = (
+            "IR 이후 시장 반응은 회사가 설명한 성장 전제가 투자자에게 받아들여졌는지 보는 보조 신호입니다. "
+            + relation
+        )
+    elif event.get("type") == "지분공시":
+        relation = (
+            "지분 공시는 실제 매매 주체가 드러나는 자료라 공시 이후 수급 반응을 특히 같이 봐야 합니다. "
+            + relation
+        )
+
+    evidence_bits = []
+    if price_at_event:
+        basis_date = (price_info or {}).get("date") or date
+        evidence_bits.append(f"공시일 종가 기준일 {basis_date}, 이후 주가 {price_str}")
+    if flow:
+        evidence_bits.append(f"{flow.get('start')}~{flow.get('end')} {flow_text}")
+    return {
+        "label": label,
+        "read": f"공시 이후 현재까지 주가는 {price_str}이고, {flow_text}입니다. {relation}",
+        "evidence": " / ".join(evidence_bits) or "KRX 가격·수급",
+    }
+
+
 def explain_growth_history(rev: dict) -> tuple[str, str]:
     if rev.get("verdict") == "확인 필요":
         return (
@@ -1837,7 +2151,14 @@ def explain_growth_history(rev: dict) -> tuple[str, str]:
     return title, body
 
 
-def build_post_report_events(context: dict, report_date: str, report: dict | None = None) -> list[dict]:
+def build_post_report_events(
+    context: dict,
+    report_date: str,
+    report: dict | None = None,
+    *,
+    stock_code: str | None = None,
+    current_price: float | None = None,
+) -> list[dict]:
     events: list[dict] = []
     for item in (context or {}).get("disclosures", [])[:12]:
         date = _normalize_event_date(item.get("date"))
@@ -1850,8 +2171,6 @@ def build_post_report_events(context: dict, report_date: str, report: dict | Non
             "summary": summarize_post_event(item),
             "url": item.get("url", ""),
         }
-        event["impact"] = explain_post_event_impact(event)
-        event["takeaway"] = explain_post_event_takeaway(event, report)
         events.append(event)
     for item in (context or {}).get("ownership", [])[:8]:
         date = _normalize_event_date(item.get("date"))
@@ -1868,16 +2187,23 @@ def build_post_report_events(context: dict, report_date: str, report: dict | Non
             "url": item.get("url", ""),
             "ratio_change": change,
         }
-        event["impact"] = explain_post_event_impact(event)
-        event["takeaway"] = explain_post_event_takeaway(event, report)
         events.append(event)
     events.sort(key=lambda item: item.get("date") or "", reverse=True)
-    return events[:6]
+    selected = events[:6]
+    for event in selected:
+        event["impact"] = explain_post_event_impact(event)
+        event["takeaway"] = explain_post_event_takeaway(event, report)
+        event["market_reaction"] = explain_event_market_reaction(
+            event,
+            stock_code=stock_code,
+            current_price=current_price,
+        )
+    return selected
 
 
-PRODUCT_TITLE = "FinSight — 리포트 신뢰도 검증"
+PRODUCT_TITLE = "FinSight — 리포트 종합점검결과"
 PRODUCT_COPY = (
-    "증권사 리포트를 그대로 받아들이기 전에 DART 재무·공시, KRX 주가·수급, "
+    "목표가와 투자의견을 그대로 받아들이기 전에 DART 재무·공시, KRX 주가·수급, "
     "증권사 목표가 평균, 발행 이후 뉴스·지분 변동, 업로드한 리포트 본문을 대조합니다. "
     "목표가와 투자의견을 어느 정도 신뢰할 수 있는지 점수화하고, 현재 주가와의 차이까지 해석합니다."
 )
@@ -2132,7 +2458,7 @@ def render_product_header() -> None:
             "box-shadow:0 2px 6px rgba(27,42,74,0.25)'>F</div>"
             "<div>"
             "<div style='font-size:23px;font-weight:850;color:#131A24;letter-spacing:-0.02em;line-height:1.1'>FinSight</div>"
-            "<div style='font-size:12.5px;font-weight:650;color:#6B7684;margin-top:1px'>리포트 신뢰도 검증</div>"
+            "<div style='font-size:12px;font-weight:650;color:#6B7684;margin-top:2px'>리포트 종합점검결과</div>"
             "</div></div>",
             unsafe_allow_html=True,
         )
@@ -2147,10 +2473,11 @@ def render_product_header() -> None:
 # ──────────────────────────────────────────────
 # 사이드바 — 자동 검색 / 직접 입력
 # ──────────────────────────────────────────────
-st.sidebar.markdown("### 리포트 신뢰도 검증")
+st.sidebar.markdown("### 증권사 리포트, 지금도 믿어도 될까요?")
 st.sidebar.caption(
-    "증권사 리포트의 목표가와 투자의견을 DART 재무·공시, KRX 주가·수급, "
-    "발행 이후 뉴스, 리포트 본문 내용과 대조해 신뢰도를 점수화하고 현재 주가와의 차이를 해석하는 도구"
+    "증권사 리포트의 목표가·투자의견·본문 의견을 DART 재무·공시, KRX 주가·수급, "
+    "발행 이후 뉴스와 업로드 PDF 본문으로 다시 대조해 리포트 주장과 현재 데이터의 차이를 "
+    "신뢰도 점수와 종합점검결과로 정리해 주는 도구입니다."
 )
 st.sidebar.divider()
 
@@ -2159,6 +2486,7 @@ st.sidebar.divider()
 ready = False
 selected_company = None
 selected_target = None
+selected_stock_code = None
 sel_broker = ""
 sel_opinion = "매수"
 report_date = ""
@@ -2171,6 +2499,7 @@ sel_report_extract_status = ""
 sel_report_target_evidence = ""
 uploaded_report_summaries: list[dict] = []
 consensus = None
+current_price_hint = None
 
 st.sidebar.markdown("**1️⃣ 종목 검색**")
 company_search = st.sidebar.text_input(
@@ -2185,10 +2514,15 @@ if search_result and search_result.get("success"):
     selected_company = search_result.get("company_name") or company_search
     consensus = search_result.get("consensus") or {}
     stock_code = search_result.get("stock_code")
+    selected_stock_code = stock_code
     mean = consensus.get("price_target_mean") or 0
     if mean:
         # 현재가 + 당일 변동 추가
-        current_price = dc.get_current_price(stock_code) if stock_code else None
+        try:
+            current_price = dc.get_current_price(stock_code) if stock_code else None
+        except Exception:
+            current_price = None
+        current_price_hint = current_price
         price_info = ""
         if current_price:
             market_snap = dc.get_market_snapshot(stock_code) if stock_code else {}
@@ -2429,74 +2763,93 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
                   report_extract_status: str = "",
                   report_target_evidence: str = "",
                   report_batch: list[dict] | None = None,
-                  cache_version: int = 2):
+                  current_price_hint: float | None = None,
+                  stock_code_hint: str | None = None,
+                  cache_version: int = 5):
     """검증할 리포트 목표가 기반 검증.
 
     실제 DART 재무 수집을 우선하고, 실패 시 보조 재무 데이터로 앱 흐름을 유지한다.
     ①축은 네이버 증권사 목표가 평균 대비 위치로 판단한다.
     """
-    real = fetch_real_financials(company_name)
+    real = fetch_real_financials(company_name, cache_version=cache_version)
 
     if real:
         # ── 실데이터 경로 ──
         financials = real["financials"]
         kpis = calculate_quarterly_kpis(financials)
         shares = real["shares_outstanding"]
-        price = real["current_price"]
+        actual_price = _num(real.get("current_price")) or _num(current_price_hint)
+        calc_price = actual_price or _num(target_price)
+        price_is_fallback = False
+        price_status = real.get("price_status") or "현재가 상태 확인 필요"
+        if not actual_price:
+            price_is_fallback = True
+            price_status = "현재가 미확인 · 가격 관련 계산은 제한적으로 표시"
         stock_code = real["stock_code"]
         comp_name = real["company_name"]
         is_demo = False
         # 발행일 이후 외국인 수급 — 기간·일평균·최근 흐름까지 함께 보관
         foreign_flow = fetch_foreign_flow(stock_code, report_date)
-        # 발행일 주가 — pykrx 자동 조회, 실패 시 현재가로 폴백
-        price_at_pub = fetch_price_at_date(stock_code, report_date) or price
+        # 발행일 종가 — 실패 시 현재가로 대체하지 않는다.
+        # 현재가 폴백은 발행 후 수익률과 상승여력 소진율을 왜곡한다.
+        price_at_pub_info = fetch_price_at_date_info(stock_code, report_date)
+        price_at_pub = price_at_pub_info.get("price") if price_at_pub_info else None
         context = fetch_report_context(comp_name, stock_code)
-        post_events = build_post_report_events(context, report_date, {"opinion": sel_opinion, "target_price": target_price})
+        post_events = build_post_report_events(
+            context,
+            report_date,
+            {"opinion": sel_opinion, "target_price": target_price},
+            stock_code=stock_code,
+            current_price=actual_price,
+        )
         comp_code = stock_code
     else:
-        # ── 데모 폴백 ──
+        # ── 보조 재무 폴백 ──
         financials = D.build_demo_financials()
         kpis = calculate_quarterly_kpis(financials)
         shares = D.DEMO_COMPANY["shares_outstanding"]
-        price = D.DEMO_COMPANY["current_price"]
+        actual_price = _num(current_price_hint)
+        calc_price = actual_price or _num(target_price)
+        price_is_fallback = True
+        price_status = "DART 재무 미연결 · 재무 축은 보조값, 가격 축은 확인값만 반영"
         comp_name = company_name or D.DEMO_COMPANY["name"]
-        comp_code = D.DEMO_COMPANY["code"]
+        comp_code = stock_code_hint or ""
         is_demo = True
-        foreign_flow = {
-            "net_eok": D.DEMO_FOREIGN_NET_EOK,
-            "start": report_date,
-            "end": datetime.date.today().isoformat(),
-            "trading_days": None,
-            "avg_daily_eok": None,
-            "recent_5d_eok": None,
-            "buy_days": None,
-            "sell_days": None,
-            "source": "데모 보조 수급값",
-            "available": True,
-        }
-        post_events = D.DEMO_POST_EVENTS
-        price_at_pub = 420000
-        context = {"disclosures": [], "ownership": [], "news": [], "blogs": [], "market": {}, "external_drivers": {}, "errors": []}
+        foreign_flow = fetch_foreign_flow(comp_code, report_date) if comp_code else None
+        price_at_pub_info = fetch_price_at_date_info(comp_code, report_date) if comp_code else None
+        price_at_pub = price_at_pub_info.get("price") if price_at_pub_info else None
+        context = (
+            fetch_report_context(comp_name, comp_code)
+            if comp_code else
+            {"disclosures": [], "ownership": [], "news": [], "blogs": [], "market": {}, "external_drivers": {}, "errors": []}
+        )
+        post_events = build_post_report_events(
+            context,
+            report_date,
+            {"opinion": sel_opinion, "target_price": target_price},
+            stock_code=comp_code,
+            current_price=actual_price,
+        )
 
     multiples = calculate_multiple_valuation(
-        kpis=kpis, shares_outstanding=shares, net_debt=0, current_price=price,
+        kpis=kpis, shares_outstanding=shares, net_debt=0, current_price=calc_price,
     )
     valuation_range = build_valuation_range(
-        dcf=None, multiples=multiples, current_price=price,
+        dcf=None, multiples=multiples, current_price=calc_price,
     )
 
     # ③ 필요 실적 (목표가 역산)
     try:
         reverse = reverse_engineer_target(
             target_price=target_price, kpis=kpis,
-            shares_outstanding=shares, current_price=price,
+            shares_outstanding=shares, current_price=calc_price,
         )
     except Exception as exc:
         reverse = reverse_engineer_target_lenient(
             target_price=target_price,
             kpis=kpis,
             shares_outstanding=shares,
-            current_price=price,
+            current_price=calc_price,
             reason=str(exc),
         )
     if "need_eps" not in reverse and reverse.get("current_eps") is not None:
@@ -2522,17 +2875,20 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
             "opinion": sel_opinion,
             "target_price": target_price,
             "price_at_pub": price_at_pub,
+            "price_at_pub_date": (price_at_pub_info or {}).get("date"),
+            "price_at_pub_requested_date": (price_at_pub_info or {}).get("requested_date"),
+            "price_at_pub_source": (price_at_pub_info or {}).get("source"),
         },
-        current_price=price,
+        current_price=actual_price,
         post_events=post_events,
         foreign_flow_fallback=foreign_flow,
     )
     batch_timeline = build_batch_post_publish_analysis(
         report_batch or [],
         stock_code=comp_code,
-        current_price=price,
+        current_price=actual_price,
         consensus=consensus,
-        fallback_price_at_pub=price_at_pub,
+        fallback_price_at_pub=None,
     )
 
     report_payload = {
@@ -2578,8 +2934,10 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
     verdict = apply_alignment_to_verdict(verdict, alignment)
 
     return {
-        "company": {"name": comp_name, "code": comp_code, "current_price": price,
-                    "shares_outstanding": shares},
+        "company": {"name": comp_name, "code": comp_code, "current_price": actual_price,
+                    "calc_price": calc_price,
+                    "shares_outstanding": shares, "price_status": price_status,
+                    "price_is_fallback": price_is_fallback},
         "report": {**report_payload, "price_at_pub": price_at_pub},
         "kpis": kpis,
         "multiples": multiples,
@@ -2616,6 +2974,8 @@ if ready:
         report_extract_status=sel_report_extract_status,
         report_target_evidence=sel_report_target_evidence,
         report_batch=uploaded_report_summaries,
+        current_price_hint=current_price_hint,
+        stock_code_hint=selected_stock_code,
     )
 else:
     A = None
@@ -2721,17 +3081,25 @@ if A.get("is_demo_financials"):
     meta_lines.append(
         "재무 항목은 현재 연결 가능한 보조값으로 계산했습니다. 실제 DART 반영 상태와 점수 영향은 '근거·출처' 탭에서 확인할 수 있습니다."
     )
-    with st.expander("🔍 DART 재무가 연결 안 되는 이유 진단", expanded=True):
+    with st.expander("🔍 DART 연결 상태 확인", expanded=True):
         diag_rows = diagnose_real_financials(selected_company or co.get("name", ""))
         st.dataframe(pd.DataFrame(diag_rows), use_container_width=True, hide_index=True)
         st.caption(
-            "❌가 처음 뜨는 단계가 원인입니다. "
-            "DART_API_KEY가 ❌면 Streamlit Cloud Secrets에 키를 넣으세요. "
-            "현재가만 ❌면 클라우드에서 외부 시세 접근이 막힌 것이라 별도 처리가 필요합니다."
+            "DART가 일시적으로 미연결이어도 앱은 멈추지 않고 보조값으로 계산을 이어갑니다. "
+            "키가 확인 필요로 뜨면 Streamlit Cloud Secrets의 DART_API_KEY를 확인하고, "
+            "현재가만 보조값이면 가격·수급 축만 제한적으로 해석하면 됩니다."
         )
 else:
     share_text = f" · 발행주식수 {co['shares_outstanding']:,.0f}주" if co.get("shares_outstanding") else ""
-    meta_lines.append(f"실제 DART 재무 연동 · 현재가 {co['current_price']:,.0f}원{share_text}")
+    price_label = "현재가" if co.get("current_price") else "현재가 미확인"
+    price_value = _fmt_won(co.get("current_price"))
+    meta_lines.append(
+        f"실제 DART 재무 연동 · {price_label} {price_value}{share_text}"
+    )
+    if co.get("price_is_fallback"):
+        meta_lines.append(
+            "현재가 수집만 실패한 경우 가격·수급 관련 계산은 가능한 항목만 표시합니다. DART 재무 자체는 실제값입니다."
+        )
     if (A.get("reverse") or {}).get("limited"):
         meta_lines.append(f"필요 실적은 보조 계산으로 표시합니다: {(A.get('reverse') or {}).get('limited_reason')}")
 
@@ -2742,8 +3110,6 @@ if meta_lines:
         + "</div>",
         unsafe_allow_html=True,
     )
-
-render_report_batch_overview(A)
 
 # ──────────────────────────────────────────────
 # 신뢰도 카드
@@ -2812,12 +3178,12 @@ with sc2:
     st.caption(f"본문 의견 검증: {content_label} · 객관분석 {penalty_text}")
 
 # 핵심 결론은 한 줄 배너로만 고정 노출.
-# 상세 평가의견·객관분석 대조는 '점검 결과' 탭에서 전체를 봅니다.
+# 상세 평가의견·객관분석 대조는 '종합점검결과' 탭에서 전체를 봅니다.
 st.markdown(
     f"<div style='margin:14px 0 4px;padding:12px 16px;border-left:4px solid {gc};"
     f"background:{COLOR['bg']};border-radius:0 8px 8px 0'>"
     f"<span style='font-size:15px;font-weight:800;color:#17202A'>{V['headline']}</span>"
-    f"<span style='font-size:13px;color:#667085;margin-left:8px'>· 믿어도 되는 말과 그대로 믿기 어려운 말은 ‘점검 결과’ 탭에서 확인하세요</span>"
+    f"<span style='font-size:13px;color:#667085;margin-left:8px'>· 믿어도 되는 말과 그대로 믿기 어려운 말은 ‘종합점검결과’ 탭에서 확인하세요</span>"
     f"</div>",
     unsafe_allow_html=True,
 )
@@ -2942,15 +3308,26 @@ def render_report_briefing(briefing: dict) -> None:
     if not briefing or not briefing.get("headline"):
         return
     headline = html.escape(str(briefing.get("headline") or ""))
+    mode = briefing.get("mode") or "multi"
+    if mode == "single":
+        kicker = "단일 리포트 본문 점검"
+        third_section = ""
+    else:
+        kicker = "복수 리포트 본문 비교"
+        third_section = _brief_section_html(
+            "리포트끼리 갈리는 내용",
+            briefing.get("contested") or [],
+            "증권사별 해석 차이는 크게 잡히지 않았습니다.",
+        )
     st.markdown(
         f"""
         <div class="fs-brief-wrap">
-          <div class="fs-brief-kicker">리포트에서 실제로 가져갈 내용</div>
+          <div class="fs-brief-kicker">{html.escape(kicker)}</div>
           <div class="fs-brief-head">{headline}</div>
           <div class="fs-brief-grid">
             {_brief_section_html("믿고 가져갈 내용", briefing.get("trusted") or [], "아직 강하게 확인된 공통 내용은 없습니다.")}
             {_brief_section_html("그대로 믿기 어려운 내용", briefing.get("watch") or [], "큰 차감으로 볼 내용은 제한적입니다.")}
-            {_brief_section_html("리포트끼리 갈리는 내용", briefing.get("contested") or [], "증권사별 해석 차이는 크게 잡히지 않았습니다.")}
+            {third_section}
           </div>
         </div>
         <style>
@@ -3061,7 +3438,7 @@ def render_report_check_result(
     batch_conclusion: str | None = None,
 ) -> None:
     """Render the concrete output: what to trust, discount, and use as evidence."""
-    headline = html.escape(str(verdict.get("headline") or "리포트 점검 결과"))
+    headline = html.escape(str(verdict.get("headline") or "리포트 종합점검결과"))
     guide = html.escape(str(verdict.get("guide") or ""))
     if has_body:
         trusted = _first_briefing_read(
@@ -3077,11 +3454,23 @@ def render_report_check_result(
     else:
         trusted = "PDF 본문을 넣지 않아 리포트 문장별 검증은 제외했습니다. 지금 결론은 입력한 목표가·발행일과 DART/KRX 자료를 기준으로 계산했습니다."
         discount = _first_alignment_read(alignment, "본문 없이 계산한 점수라 리포트 안의 세부 주장은 아직 별도로 확인해야 합니다.")
-    contested = _first_briefing_read(
-        briefing,
-        "contested",
-        batch_conclusion or "증권사별 의견 차이는 목표가·투자의견 비교표에서 확인합니다.",
-    )
+    report_count = int(content_view.get("report_count") or 0)
+    if report_count >= 2:
+        third_title = "리포트끼리 다른 부분"
+        contested = _first_briefing_read(
+            briefing,
+            "contested",
+            batch_conclusion or "증권사별 의견 차이는 목표가·투자의견 비교표에서 확인합니다.",
+        )
+    elif report_count == 1:
+        third_title = "비교 방식"
+        contested = (
+            "인식된 본문이 1개라 증권사 간 차이는 계산하지 않았습니다. "
+            "대신 이 리포트의 핵심 주장과 DART 재무·공시, KRX 주가·수급을 직접 대조했습니다."
+        )
+    else:
+        third_title = "본문 검증 상태"
+        contested = "인식된 리포트 본문이 없어 리포트 간 차이 계산은 제외했습니다."
     evidence = " ".join(str(x) for x in (verdict.get("evidence_sentences") or [])[:2])
     if not evidence:
         evidence = "목표가 편차, 발행 이후 주가·수급, 필요한 실적 수준을 함께 대조했습니다."
@@ -3089,7 +3478,7 @@ def render_report_check_result(
     st.markdown(
         f"""
         <div class="fs-result-sheet">
-          <div class="fs-result-kicker">리포트 점검 결과</div>
+          <div class="fs-result-kicker">리포트 종합점검결과</div>
           <div class="fs-result-title">{headline}</div>
           <div class="fs-result-guide">{guide}</div>
           <div class="fs-result-grid">
@@ -3102,7 +3491,7 @@ def render_report_check_result(
               <p>{html.escape(discount)}</p>
             </section>
             <section>
-              <h4>리포트끼리 다른 부분</h4>
+              <h4>{html.escape(third_title)}</h4>
               <p>{html.escape(contested)}</p>
             </section>
           </div>
@@ -3194,12 +3583,17 @@ else:
         f"논점 {len(content_view.get('theme_rows', []))}개 · "
         f"객관분석 -{content_assessment.get('penalty', 0)}점"
     )
+time_caption = (
+    f"발행 {tl['elapsed']}일 경과 · 발행일 종가 확인 불가"
+    if tl.get("soak_pct") is None
+    else f"발행 {tl['elapsed']}일 경과 · 여력 {tl['soak_pct']}% 소진"
+)
 
 signal_cards = [
     ("① 목표가 편차", COLOR["space"], signal_icon(dist["position"]), dist["position"],
      f"목표가 평균 {dist['mean']:,.0f}원 대비 {dist['vs_median_pct']:+.1f}%"),
     ("② 발행 이후 괴리", COLOR["time"], signal_icon(sig), sig,
-     f"발행 {tl['elapsed']}일 경과 · 여력 {tl['soak_pct']}% 소진"),
+     time_caption),
     ("③ 필요 실적", COLOR["logic"], signal_icon(rev["verdict"]), rev["verdict"],
      (rev.get("limited_reason") if rev.get("verdict") == "확인 필요"
       else f"필요 성장률 {rev['need_growth']:+.0f}% · 과거 중앙값 {rev['median_growth']:+.0f}%")),
@@ -3231,7 +3625,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "② 발행 이후 괴리",
     "③ 필요 실적",
     "④ 본문 의견 검증",
-    "점검 결과",
+    "종합점검결과",
     "근거·출처",
 ])
 
@@ -3340,14 +3734,38 @@ with tab2:
     st.markdown("#### 종합 점수 기준")
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("발행일 주가", f"{tl['price_at_pub']:,}원")
-        st.metric("현재 주가", f"{co['current_price']:,}원")
-        st.metric("변화율", f"{(co['current_price']/tl['price_at_pub']-1)*100:.1f}%")
+        price_note = ""
+        if tl.get("price_at_pub_date"):
+            requested = tl.get("price_at_pub_requested_date") or rep.get("pub_date")
+            basis_date = tl.get("price_at_pub_date")
+            date_note = f"요청 발행일 {requested} · 종가 기준일 {basis_date}"
+            if requested != basis_date:
+                date_note += " (휴장일이면 직전 거래일 종가 사용)"
+            price_note = f"{date_note} · {tl.get('price_at_pub_source', 'KRX')}"
+        st.markdown(
+            f"""
+            <div style="border:1px solid #E2E8F0;border-radius:8px;background:#FFFFFF;
+                        padding:10px 13px 9px;margin:0 0 10px 0">
+              <div style="font-size:13px;color:#667085;line-height:1.2;margin-bottom:4px">
+                발행일 종가
+              </div>
+              <div style="font-size:28px;font-weight:700;color:#17202A;line-height:1.2">
+                {html.escape(_fmt_won(tl.get("price_at_pub")))}
+              </div>
+              <div style="font-size:11.5px;color:#8A94A3;line-height:1.35;margin-top:5px">
+                {html.escape(price_note)}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.metric("현재 주가", _fmt_won(co.get("current_price")))
+        st.metric("변화율", _fmt_pct(tl.get("realized")))
 
     with col2:
-        st.metric("목표가까지 남은 여력", f"{(rep['target_price']/co['current_price']-1)*100:.1f}%")
+        st.metric("목표가까지 남은 여력", _fmt_pct(tl.get("remaining")))
         st.metric("발행 후 경과일", f"{tl['elapsed']}일")
-        st.metric("여력 소진율", f"{tl['soak_pct']}%")
+        st.metric("여력 소진율", "계산 제외" if tl.get("soak_pct") is None else f"{tl['soak_pct']}%")
 
     price_basis = ""
     if A.get("price_action", {}).get("price_frame"):
@@ -3373,14 +3791,35 @@ with tab2:
         if price_action.get("thesis"):
             st.caption(price_action["thesis"])
         for row in price_rows[:3]:
+            impact_label = row.get("impact_label") or "가격 괴리 단서"
+            evidence = row.get("evidence") or "근거 확인 필요"
             st.markdown(
-                f"**{row.get('driver')} · {row.get('weight')}**  \n"
+                f"**{row.get('driver')} · {impact_label}**  \n"
                 f"{row.get('reading')}  \n"
-                f"<span style='color:#667085;font-size:13px'>근거: {row.get('evidence')}</span>",
+                f"<span style='color:#667085;font-size:13px'>근거: {evidence}</span>",
                 unsafe_allow_html=True,
             )
     if tl.get("events"):
         st.markdown("#### 발행 이후 확인된 변화")
+        event_summary = summarize_post_events_so_what(tl.get("events", []), rep)
+        if event_summary:
+            st.markdown(
+                f"""
+                <div style="border:1px solid #E2E8F0;border-left:4px solid {event_summary['color']};
+                            border-radius:8px;background:#FFFFFF;padding:11px 13px;margin:2px 0 10px">
+                  <div style="font-size:13.5px;font-weight:850;color:#17202A;line-height:1.45">
+                    {html.escape(event_summary['headline'])}
+                  </div>
+                  <div style="font-size:12px;color:#475569;line-height:1.55;margin-top:4px">
+                    {html.escape(event_summary['body'])}
+                  </div>
+                  <div style="font-size:11.5px;color:{event_summary['color']};font-weight:850;margin-top:5px">
+                    {html.escape(event_summary['counts'])}
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
         for item in tl.get("events", [])[:5]:
             date = item.get("date", "")
             event_type = item.get("type", "")
@@ -3388,7 +3827,13 @@ with tab2:
             summary = item.get("summary") or summarize_post_event(item)
             impact = item.get("impact") or explain_post_event_impact(item)
             takeaway = item.get("takeaway") or explain_post_event_takeaway(item, rep)
+            market_reaction = item.get("market_reaction") or explain_event_market_reaction(
+                item,
+                stock_code=co.get("code"),
+                current_price=co.get("current_price"),
+            )
             tone = takeaway.get("tone", "확인")
+            relation_badge = relation_badge_html(tone)
             url = item.get("url")
             link_html = (
                 f"<div style='font-size:12px;margin-top:2px'>"
@@ -3401,7 +3846,14 @@ with tab2:
                 f"<b>확인된 변화 · {html.escape(tone)}</b><br>{html.escape(takeaway.get('confirmed', ''))}"
                 f"</div>"
                 f"<div style='font-size:12px;color:#475569;line-height:1.55;margin-top:3px'>"
-                f"<b>리포트와의 관계</b><br>{html.escape(takeaway.get('relation', ''))}"
+                f"<b>리포트와의 관계</b>{relation_badge}<br>{html.escape(takeaway.get('relation', ''))}"
+                f"</div>"
+                f"<div style='font-size:12px;color:#334155;line-height:1.55;margin-top:3px'>"
+                f"<b>공시 이후 시장 반응 · {html.escape(market_reaction.get('label', '확인'))}</b><br>"
+                f"{html.escape(market_reaction.get('read', ''))}"
+                f"</div>"
+                f"<div style='font-size:11.5px;color:#667085;line-height:1.45;margin-top:2px'>"
+                f"근거: {html.escape(market_reaction.get('evidence', ''))}"
                 f"</div>"
             )
             st.markdown(
@@ -3480,11 +3932,28 @@ with tab3:
             st.metric("필요값", f"{rev['need_growth']:+.1f}%")
 
 with tab4:
-    st.subheader("리포트 본문 의견이 실제 데이터와 맞는가")
+    content_report_count = int(content_view.get("report_count") or 0)
+    content_mode = content_view.get("mode") or ("single" if content_report_count == 1 else "multi")
+    if content_report_count >= 2:
+        content_title = "리포트 본문 의견이 서로, 그리고 실제 데이터와 맞는가"
+        content_question = "여러 리포트가 공통으로 보는 전제와 서로 다르게 보는 전제가 무엇인가"
+        content_basis = "PDF 본문 문장, 리포트별 강조 논점, DART 재무, 발행 후 주가·수급·공시"
+        content_output = "공통으로 맞는 내용, 해석이 갈리는 부분, 낙관적으로 볼 수 있는 부분을 나눕니다."
+    elif content_report_count == 1:
+        content_title = "단일 리포트 본문이 실제 데이터와 맞는가"
+        content_question = "이 리포트가 좋게 본 전제가 현재 확인되는 숫자와 충돌하지 않는가"
+        content_basis = "업로드 PDF 본문 문장, DART 재무, 발행 후 주가·수급·공시"
+        content_output = "증권사 간 비교는 제외하고, 이 리포트의 주장과 실제 데이터의 차이만 봅니다."
+    else:
+        content_title = "본문 의견 검증"
+        content_question = "PDF 본문을 읽을 수 있을 때 리포트의 핵심 주장을 검증합니다"
+        content_basis = "업로드 PDF 본문 문장"
+        content_output = "본문이 없으면 이 축은 점수에서 제외합니다."
+    st.subheader(content_title)
     render_axis_brief(
-        "리포트 본문에서 좋게 본 부분이 실제 숫자로도 확인되는가",
-        "PDF 본문 문장, 리포트별 강조 논점, DART 재무, 발행 후 주가·수급·공시",
-        "공통으로 맞는 내용, 해석이 갈리는 부분, 낙관적으로 볼 수 있는 부분을 나눕니다.",
+        content_question,
+        content_basis,
+        content_output,
     )
     render_detail_block(
         "해석",
@@ -3503,7 +3972,10 @@ with tab4:
         with m1:
             st.metric("분석 논점", f"{len(theme_rows)}개")
         with m2:
-            st.metric("의견 차이", f"{content_assessment.get('divergent_count', 0)}개")
+            if content_report_count >= 2:
+                st.metric("의견 차이", f"{content_assessment.get('divergent_count', 0)}개")
+            else:
+                st.metric("비교 방식", "단일 리포트")
         with m3:
             penalty = content_assessment.get("penalty", 0)
             st.metric("신뢰도 반영", "차감 없음" if not penalty else f"-{penalty}점")
@@ -3514,7 +3986,7 @@ with tab4:
             display_rows.append({
                 "논점": row.get("논점"),
                 "언급": row.get("언급 리포트"),
-                "리포트별 방향": row.get("리포트 간 차이"),
+                "본문 방향": row.get("리포트 간 차이"),
                 "실제 데이터 대조": row.get("FinSight 대조"),
                 "판단": row.get("판정"),
             })
@@ -3526,10 +3998,10 @@ with tab4:
 with tab5:
     col_title, col_btn = st.columns([0.85, 0.15])
     with col_title:
-        st.subheader("리포트 점검 결과")
+        st.subheader("리포트 종합점검결과")
     with col_btn:
         st.download_button(
-            "검증 리포트 HTML",
+            "종합점검 리포트 HTML",
             html_report.encode("utf-8"),
             file_name=f"FinSight_{co['name']}_Report_Check.html",
             mime="text/html",
@@ -3542,7 +4014,7 @@ with tab5:
     )
     render_detail_block(
         "산출물",
-        "점수표가 아니라 리포트 점검 결과입니다. 매수·매도 타이밍을 찍지 않고, 리포트에서 어떤 문장을 판단 근거로 써도 되는지와 어떤 문장은 낮게 봐야 하는지를 정리합니다.",
+        "점수표가 아니라 리포트 종합점검결과입니다. 매수·매도 타이밍을 찍지 않고, 리포트에서 어떤 문장을 판단 근거로 써도 되는지와 어떤 문장은 낮게 봐야 하는지를 정리합니다.",
         f"최종 {V['total']}점 · {V['grade']}등급",
         f"기초 {V.get('base_total', V['total'])}점 / 객관분석 -{V.get('alignment', {}).get('penalty', 0)}점",
     )

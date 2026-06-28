@@ -156,7 +156,7 @@ def _price_gap_read(analysis: dict) -> list[dict]:
     for item in price_action.get("attribution", [])[:4]:
         rows.append({
             "title": item.get("driver", "요인"),
-            "verdict": item.get("weight", ""),
+            "verdict": item.get("impact_label", ""),
             "read": item.get("reading", ""),
             "evidence": item.get("evidence", ""),
         })
@@ -169,11 +169,18 @@ def _issue_read(analysis: dict) -> list[dict]:
     rows: list[dict] = []
     if events:
         for item in events[:4]:
+            takeaway = item.get("takeaway") or {}
+            market = item.get("market_reaction") or {}
+            read_parts = [
+                takeaway.get("confirmed") or item.get("summary") or item.get("detail", ""),
+                takeaway.get("relation") or "",
+                market.get("read") or "",
+            ]
             rows.append({
                 "title": item.get("type", "발행 후 공시·뉴스"),
-                "verdict": item.get("date", ""),
-                "read": item.get("detail", ""),
-                "evidence": "리포트 발행 이후 확인 항목",
+                "verdict": f"{item.get('date', '')} · {market.get('label', takeaway.get('tone', '확인'))}",
+                "read": " ".join(part for part in read_parts if part),
+                "evidence": market.get("evidence") or item.get("detail", "리포트 발행 이후 확인 항목"),
             })
     if timeline.get("supply_gap"):
         rows.append({
@@ -538,12 +545,15 @@ def generate_retail_html_report(analysis: dict) -> str:
     if not content_rows:
         content_rows = "<tr><td colspan='5'>PDF 본문을 읽지 못해 본문 의견 검증은 제외했습니다.</td></tr>"
     briefing = (model.get("report_content") or {}).get("briefing") or {}
+    content_mode = (model.get("report_content") or {}).get("mode") or briefing.get("mode") or "multi"
     briefing_sections = []
-    for title, key in (
+    section_specs = [
         ("믿고 가져갈 내용", "trusted"),
         ("그대로 믿기 어려운 내용", "watch"),
-        ("리포트끼리 갈리는 내용", "contested"),
-    ):
+    ]
+    if content_mode == "multi":
+        section_specs.append(("리포트끼리 갈리는 내용", "contested"))
+    for title, key in section_specs:
         items = briefing.get(key) or []
         if not items:
             continue
@@ -578,7 +588,7 @@ def generate_retail_html_report(analysis: dict) -> str:
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <title>FinSight 리포트 점검 결과 - {_e(company['name'])}</title>
+  <title>FinSight 리포트 종합점검결과 - {_e(company['name'])}</title>
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif; color:#17202A; margin:0; background:#F7F8FA; }}
     main {{ max-width: 920px; margin: 0 auto; padding: 42px 34px 64px; background:#fff; min-height:100vh; }}
@@ -617,14 +627,14 @@ def generate_retail_html_report(analysis: dict) -> str:
 </head>
 <body>
 <main>
-  <div class="kicker">FinSight 리포트 점검 결과</div>
+  <div class="kicker">FinSight 리포트 종합점검결과</div>
   <h1>{_e(company['name'])} 목표가 검증</h1>
   <div class="meta">{_e(report.get('broker') or '증권사 미입력')} · 발행일 {_e(report.get('pub_date'))} · 목표가 {_e(_won(report.get('target_price')))} · 생성일 {model['as_of']}</div>
   <div class="score"><b>{verdict['total']}</b><span>/100 · {verdict['grade']}등급</span></div>
   <div class="summary">{_e(model['summary'])}</div>
 
   <section class="view-box">
-    <h2>한눈에 보는 점검 결과</h2>
+    <h2>한눈에 보는 종합점검결과</h2>
     <p><b>{_e(analyst.get('stance'))}</b> — {_e(analyst.get('stance_read'))}</p>
     <p>{_e(analyst.get('subtitle'))}</p>
   </section>
@@ -716,7 +726,7 @@ def generate_retail_pdf_report(analysis: dict) -> bytes:
     company = model["company"]
     report = model["report"]
     verdict = model["verdict"]
-    write("FinSight 리포트 점검 결과", 11)
+    write("FinSight 리포트 종합점검결과", 11)
     write(f"{company['name']} 목표가 검증", 20, "B", 9)
     write(f"{report.get('broker') or '증권사 미입력'} · 발행일 {report.get('pub_date')} · 목표가 {_won(report.get('target_price'))} · 생성일 {model['as_of']}", 10)
     pdf.ln(2)
@@ -739,11 +749,14 @@ def generate_retail_pdf_report(analysis: dict) -> bytes:
     briefing = (model.get("report_content") or {}).get("briefing") or {}
     if briefing.get("headline"):
         write(f"브리핑: {briefing.get('headline')}", 10, "B")
-        for title, key in (
+        content_mode = (model.get("report_content") or {}).get("mode") or briefing.get("mode") or "multi"
+        section_specs = [
             ("믿고 가져갈 내용", "trusted"),
             ("그대로 믿기 어려운 내용", "watch"),
-            ("리포트끼리 갈리는 내용", "contested"),
-        ):
+        ]
+        if content_mode == "multi":
+            section_specs.append(("리포트끼리 갈리는 내용", "contested"))
+        for title, key in section_specs:
             items = briefing.get(key) or []
             if not items:
                 continue

@@ -96,7 +96,7 @@ def _latest_kpi_snapshot(kpis: pd.DataFrame | None) -> dict:
 def _dart_status_text(analysis: dict, kpis: pd.DataFrame | None) -> str:
     snapshot = _latest_kpi_snapshot(kpis)
     if analysis.get("is_demo_financials"):
-        return f"데모 재무 사용 · {snapshot['summary']}"
+        return f"보조 재무값 사용 · {snapshot['summary']}"
     if snapshot["rows"]:
         return f"연결 · {snapshot['summary']} · 핵심 누락 {snapshot['missing']}"
     if dc.DART_API_KEY:
@@ -229,7 +229,7 @@ def build_scoring_rulebook(analysis: dict) -> list[dict]:
             "구분": "FinSight 객관분석",
             "배점": "최종 추가 차감",
             "비중 설명": "기존 애널리스트 워크벤치의 재무 이상징후, 현금흐름, 수급 괴리 신호를 리포트 신뢰도 관점으로 바꿔 반영합니다.",
-            "차감 기준": "High 이상징후 -6점, 일반 이상징후 -3점, FCF(잉여현금흐름) 마진 음수 -5점, CFO 마진 음수 -4점, 가격·수급 괴리 -3점 등입니다. 본문 의견 검증까지 합쳐 최대 -24점으로 제한합니다.",
+            "차감 기준": "강한 이상징후 -6점, 일반 이상징후 -3점, FCF(잉여현금흐름) 마진 음수 -5점, CFO 마진 음수 -4점, 가격·수급 괴리 -3점 등입니다. 본문 의견 검증까지 합쳐 최대 -24점으로 제한합니다.",
             "현재 적용": f"-{(analysis['verdict'].get('alignment') or {}).get('penalty', 0)}점",
         },
     ]
@@ -263,8 +263,8 @@ def build_dart_health_summary(analysis: dict) -> dict:
     context = analysis.get("context") or {}
     snapshot = _latest_kpi_snapshot(kpis)
     if analysis.get("is_demo_financials"):
-        title = "DART 재무 미연결"
-        status = "데모 재무로 계산 중"
+        title = "DART 재무 일시 미연결"
+        status = "보조 재무값으로 화면 유지"
     elif snapshot["rows"]:
         title = "DART 재무 연결"
         status = "실제 OpenDART 재무 반영"
@@ -342,7 +342,7 @@ def build_source_audit(analysis: dict) -> list[dict]:
         },
         {
             "자료": "DART 재무",
-            "출처": "OpenDART 분기 재무제표" if not analysis.get("is_demo_financials") else "내장 데모 재무",
+            "출처": "OpenDART 분기 재무제표" if not analysis.get("is_demo_financials") else "보조 재무값",
             "확인값": f"{dart_snapshot['summary']}, 발행주식수 {_shares(company.get('shares_outstanding'))}, 핵심 누락 {dart_snapshot['missing']}",
             "점수 연결": "EPS 역산, 재무 이상징후, 현금 전환 평가에 사용합니다.",
         },
@@ -367,10 +367,10 @@ def build_source_audit(analysis: dict) -> list[dict]:
     ]
     if analysis.get("is_demo_financials"):
         rows.append({
-            "자료": "데모 재무 폴백",
-            "출처": "내장 데모 데이터",
-            "확인값": "실제 DART 재무 수집 실패로 데모 재무를 사용했습니다.",
-            "점수 연결": "목표가 편차 외의 축은 데모 계산이므로 실제 평가 신뢰도가 낮습니다.",
+            "자료": "DART 미연결 보조 처리",
+            "출처": "보조 재무값",
+            "확인값": "OpenDART 분기 재무가 일시 미연결되어 재무 축은 보조값으로 유지했습니다.",
+            "점수 연결": "목표가 편차와 업로드 리포트 비교는 유지하되, 필요 실적·재무 이상징후는 실제 DART 연결 후 다시 확인해야 합니다.",
         })
     return rows
 
@@ -485,23 +485,25 @@ def build_update_audit(analysis: dict) -> list[dict]:
         })
     for event in timeline.get("events", [])[:6]:
         takeaway = event.get("takeaway") or {}
+        market = event.get("market_reaction") or {}
         confirmed = takeaway.get("confirmed", "")
         relation = takeaway.get("relation", "")
+        market_read = market.get("read", "")
         judgment = event.get("impact") or "리포트 발행 이후 확인된 항목입니다. 목표가·의견이 여전히 유효한지 최신화해야 합니다."
-        if confirmed or relation:
-            judgment = " ".join(part for part in (confirmed, relation, judgment) if part)
+        if confirmed or relation or market_read:
+            judgment = " ".join(part for part in (confirmed, relation, market_read, judgment) if part)
         rows.append({
             "평가 구분": "발행 후 업데이트",
             "항목": f"{event.get('date', '')} · {event.get('type', '')}",
             "판단": judgment,
-            "근거": event.get("detail", ""),
+            "근거": " / ".join(part for part in (event.get("detail", ""), market.get("evidence", "")) if part),
             "점수 영향": "발행 이후 괴리 근거",
         })
     price_action = analysis.get("price_action") or {}
     for item in price_action.get("attribution", [])[:4]:
         rows.append({
             "평가 구분": "주가 괴리 분해",
-            "항목": f"{item.get('driver', '')} · {item.get('weight', '')}",
+            "항목": f"{item.get('driver', '')} · {item.get('impact_label') or item.get('weight', '')}",
             "판단": item.get("reading", ""),
             "근거": item.get("evidence", ""),
             "점수 영향": "시장 해석·객관분석 차감 보조",
