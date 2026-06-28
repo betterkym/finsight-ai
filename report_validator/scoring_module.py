@@ -103,6 +103,92 @@ def grade_of(total: int) -> tuple[str, str]:
     return "E", "낙관 편향 강함"
 
 
+def _num(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pct(value) -> str:
+    number = _num(value)
+    if number is None:
+        return "N/A"
+    return f"{number:+.1f}%"
+
+
+def _eok_flow(value) -> str:
+    number = _num(value)
+    if number is None:
+        return "외국인 수급 N/A"
+    direction = "순매수" if number >= 0 else "순매도"
+    return f"외국인 {direction} {abs(number):,.0f}억원"
+
+
+def _judgment_label(total: int, distribution: dict, timeline: dict, reverse: dict) -> str:
+    """Translate the score into investor-facing reading guidance, not a buy/sell call."""
+    soak = _num(timeline.get("soak_pct"))
+    supply_gap = bool(timeline.get("supply_gap"))
+    reverse_verdict = reverse.get("verdict")
+    z = abs(_num(distribution.get("z")) or 0)
+
+    if total < 45:
+        return "리포트 결론을 그대로 믿기 어려움"
+    if supply_gap and soak is not None and soak >= 70:
+        return "매수 의견은 있지만 지금 따라가기 부담"
+    if soak is not None and soak >= 70:
+        return "목표가 여력보다 가격 반영을 먼저 봐야 함"
+    if supply_gap:
+        return "실적보다 시장 반응 확인이 먼저"
+    if reverse_verdict in {"낙관", "과도한 낙관"}:
+        return "목표가보다 다음 실적 확인이 중요"
+    if z >= 1.0:
+        return "공격적인 목표가라 근거 확인 필요"
+    if total >= 75:
+        return "리포트 근거를 비교적 편하게 참고 가능"
+    return "참고 가능하지만 핵심 전제는 재확인"
+
+
+def _evidence_sentences(distribution: dict, timeline: dict, reverse: dict, weakest: str) -> list[str]:
+    """Build compact, concrete reasons for the comprehensive verdict."""
+    sentences: list[str] = []
+
+    realized = _num(timeline.get("realized"))
+    remaining = _num(timeline.get("remaining"))
+    soak = _num(timeline.get("soak_pct"))
+    elapsed = timeline.get("elapsed")
+    if realized is not None and remaining is not None:
+        prefix = f"리포트 발행 후 {elapsed}일 기준, " if elapsed is not None else ""
+        sentence = f"{prefix}발행 이후 주가는 {_pct(realized)} 움직였고, 목표가까지 남은 여력은 {_pct(remaining)}입니다"
+        if soak is not None:
+            sentence += f". 발행 당시 기대 상승여력의 {soak:.0f}%가 가격에 반영된 상태입니다"
+        sentences.append(sentence + ".")
+
+    if timeline.get("foreign_net") is not None:
+        flow = _eok_flow(timeline.get("foreign_net"))
+        recent = _num(timeline.get("foreign_recent_5d"))
+        if recent is not None:
+            sentences.append(f"같은 기간 {flow}이고 최근 5거래일은 {_eok_flow(recent)}이라, 시장 반응이 리포트 방향과 맞는지 따로 봐야 합니다.")
+        else:
+            sentences.append(f"같은 기간 {flow}라, 리포트 의견과 실제 수급 방향이 같은지 확인해야 합니다.")
+
+    vs_mean = _num(distribution.get("vs_median_pct"))
+    if vs_mean is not None:
+        sentences.append(f"목표가는 증권사 평균 대비 {_pct(vs_mean)} 위치라, 평균에서 멀수록 더 강한 실적 근거가 필요합니다.")
+
+    if reverse.get("verdict") and reverse.get("verdict") != "확인 필요":
+        need = _num(reverse.get("need_growth"))
+        median = _num(reverse.get("median_growth"))
+        if need is not None and median is not None:
+            sentences.append(f"목표가가 성립하려면 EPS가 {_pct(need)} 성장해야 하고, 과거 중앙값은 {_pct(median)}입니다.")
+        else:
+            sentences.append(f"필요 실적 판정은 '{reverse.get('verdict')}'입니다.")
+
+    if not sentences:
+        sentences.append(f"현재 가장 약한 축은 {weakest}입니다.")
+    return sentences[:4]
+
+
 def build_report_verdict(
     distribution: dict, timeline: dict, reverse: dict, report: dict
 ) -> dict:
@@ -135,18 +221,29 @@ def build_report_verdict(
 
     broker = report.get("broker", "이 증권사")
     target = report.get("target_price", 0)
+    judgment = _judgment_label(total, distribution, timeline, reverse)
+    evidence = _evidence_sentences(distribution, timeline, reverse, weakest)
 
-    if total >= 60:
-        headline = f"{broker}의 목표가 {target:,}원은 현재 데이터와 크게 충돌하지 않습니다."
-        guide = "목표가 편차·발행 이후 괴리·필요 실적에서 큰 차감 요인은 제한적입니다. 목표가를 참고할 수는 있지만, 리포트 결론이 확정됐다는 뜻은 아닙니다."
-    elif total >= 45:
-        headline = f"{broker}의 목표가 {target:,}원은 주의해서 봐야 합니다."
-        guide = f"특히 '{weakest}'이 신뢰도를 낮춥니다. 리포트의 결론보다 근거와 가정이 맞는지 보는 쪽이 안전합니다."
-    else:
-        headline = f"{broker}의 목표가 {target:,}원은 그대로 믿기 어렵습니다."
+    headline = f"{broker} 목표가 {target:,}원: {judgment}"
+    if total >= 75:
         guide = (
-            f"핵심 검증에서 약점이 여러 개 드러났고, 특히 '{weakest}'이 두드러집니다. "
-            f"리포트의 목표가가 현재 확인된 데이터보다 낙관적일 가능성이 큽니다."
+            f"신뢰도는 높지만 매수·매도 타이밍을 찍는 결과는 아닙니다. "
+            f"{' '.join(evidence)} 따라서 이 리포트는 주요 근거를 참고하되, 현재가 기준 가격 반영 정도는 함께 봐야 합니다."
+        )
+    elif total >= 60:
+        guide = (
+            f"리포트 방향은 참고할 수 있지만 그대로 확신하기보다는 핵심 전제를 다시 보는 쪽이 낫습니다. "
+            f"{' '.join(evidence)} 그래서 매수 의견 자체보다 현재 가격에서 남은 여력과 다음 실적 확인이 더 중요합니다."
+        )
+    elif total >= 45:
+        guide = (
+            f"이 리포트는 결론보다 가정을 할인해서 봐야 합니다. "
+            f"{' '.join(evidence)} 특히 {weakest} 때문에 목표가를 현재 시점에서 그대로 받아들이기에는 부담이 있습니다."
+        )
+    else:
+        guide = (
+            f"현재 확인되는 데이터만 놓고 보면 이 리포트의 목표가와 투자의견은 보수적으로 봐야 합니다. "
+            f"{' '.join(evidence)} 리포트의 긍정 논리가 틀렸다고 단정하는 것은 아니지만, 지금 판단 근거로 그대로 쓰기에는 신뢰도가 낮습니다."
         )
 
     return {
@@ -162,6 +259,8 @@ def build_report_verdict(
         },
         "headline": headline,
         "guide": guide,
+        "judgment": judgment,
+        "evidence_sentences": evidence,
         "weakest": weakest,
         "disclaimer": "이 점수는 '리포트의 신뢰도'에 대한 평가이며, 종목 매수·매도 추천이 아닙니다.",
     }

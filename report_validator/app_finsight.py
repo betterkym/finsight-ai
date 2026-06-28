@@ -66,6 +66,7 @@ from report_validator.evidence_audit import (
     build_source_audit,
     build_update_audit,
     score_formula,
+    _has_report_body,
 )
 from lib.research_reference import get_research_reference, RESEARCH_LIBRARY
 from report_validator.consensus_crawler import search_company_and_consensus, fetch_naver_research_reports
@@ -1607,6 +1608,13 @@ def _short_summary(text: str, limit: int = 150) -> str:
     return cleaned if len(cleaned) <= limit else cleaned[:limit].rstrip() + "..."
 
 
+def _reportless_score_note() -> str:
+    return (
+        "리포트 PDF 본문을 넣지 않은 상태라 본문 의견 검증은 이번 점수에서 제외했습니다. "
+        "현재 점수는 목표가 편차, 발행 이후 괴리, 필요 실적, DART·주가·수급 기반 객관분석으로 계산했습니다."
+    )
+
+
 def summarize_post_event(item: dict) -> str:
     title = str(item.get("title") or item.get("detail") or "")
     description = item.get("description") or item.get("summary") or item.get("reason") or ""
@@ -2662,6 +2670,7 @@ if A is None:
 
 # 이후는 A가 있을 때만 실행
 co, rep, V = A["company"], A["report"], A["verdict"]
+has_report_body = _has_report_body(A)
 content_view = A.get("report_content") or analyze_report_content_batch(A)
 content_assessment = A.get("report_content_assessment") or assess_report_content_consistency(content_view)
 content_briefing = content_view.get("briefing") or build_report_briefing(content_view, content_assessment)
@@ -2699,6 +2708,8 @@ if rep.get("pdf_url"):
         f"<div><a href='{html.escape(str(rep['pdf_url']))}' target='_blank' "
         f"style='color:#185FA5;text-decoration:none;font-weight:700'>원문 PDF 열기</a></div>"
     )
+if not has_report_body:
+    meta_lines.append(_reportless_score_note())
 
 html_report = generate_retail_html_report(A)
 try:
@@ -2801,12 +2812,12 @@ with sc2:
     st.caption(f"본문 의견 검증: {content_label} · 객관분석 {penalty_text}")
 
 # 핵심 결론은 한 줄 배너로만 고정 노출.
-# 상세 평가의견·객관분석 대조는 '종합평가' 탭에서 전체를 봅니다.
+# 상세 평가의견·객관분석 대조는 '점검 결과' 탭에서 전체를 봅니다.
 st.markdown(
     f"<div style='margin:14px 0 4px;padding:12px 16px;border-left:4px solid {gc};"
     f"background:{COLOR['bg']};border-radius:0 8px 8px 0'>"
     f"<span style='font-size:15px;font-weight:800;color:#17202A'>{V['headline']}</span>"
-    f"<span style='font-size:13px;color:#667085;margin-left:8px'>· 자세한 평가의견과 객관분석 대조는 ‘종합평가’ 탭에서 확인하세요</span>"
+    f"<span style='font-size:13px;color:#667085;margin-left:8px'>· 믿어도 되는 말과 그대로 믿기 어려운 말은 ‘점검 결과’ 탭에서 확인하세요</span>"
     f"</div>",
     unsafe_allow_html=True,
 )
@@ -2938,7 +2949,7 @@ def render_report_briefing(briefing: dict) -> None:
           <div class="fs-brief-head">{headline}</div>
           <div class="fs-brief-grid">
             {_brief_section_html("믿고 가져갈 내용", briefing.get("trusted") or [], "아직 강하게 확인된 공통 내용은 없습니다.")}
-            {_brief_section_html("아직 보수적으로 볼 내용", briefing.get("watch") or [], "큰 차감으로 볼 내용은 제한적입니다.")}
+            {_brief_section_html("그대로 믿기 어려운 내용", briefing.get("watch") or [], "큰 차감으로 볼 내용은 제한적입니다.")}
             {_brief_section_html("리포트끼리 갈리는 내용", briefing.get("contested") or [], "증권사별 해석 차이는 크게 잡히지 않았습니다.")}
           </div>
         </div>
@@ -3019,6 +3030,155 @@ def render_report_briefing(briefing: dict) -> None:
         unsafe_allow_html=True,
     )
 
+def _first_briefing_read(briefing: dict, key: str, fallback: str) -> str:
+    items = (briefing or {}).get(key) or []
+    if not items:
+        return fallback
+    item = items[0]
+    title = item.get("title") or "핵심 논점"
+    read = item.get("read") or item.get("evidence") or ""
+    return f"{title}: {read}" if read else str(title)
+
+
+def _first_alignment_read(alignment: dict, fallback: str) -> str:
+    factors = (alignment or {}).get("factors") or []
+    if not factors:
+        return fallback
+    factor = factors[0]
+    title = factor.get("title") or "차감 요인"
+    reason = factor.get("reason") or factor.get("evidence") or ""
+    points = factor.get("points", 0)
+    point_text = f" 신뢰도 -{points}점." if points else ""
+    return f"{title}.{point_text} {reason}".strip()
+
+
+def render_report_check_result(
+    verdict: dict,
+    briefing: dict,
+    content_view: dict,
+    alignment: dict,
+    has_body: bool,
+    batch_conclusion: str | None = None,
+) -> None:
+    """Render the concrete output: what to trust, discount, and use as evidence."""
+    headline = html.escape(str(verdict.get("headline") or "리포트 점검 결과"))
+    guide = html.escape(str(verdict.get("guide") or ""))
+    if has_body:
+        trusted = _first_briefing_read(
+            briefing,
+            "trusted",
+            content_view.get("summary") or "본문에서 강하게 가져갈 공통 논점은 아직 제한적입니다.",
+        )
+        discount = _first_briefing_read(
+            briefing,
+            "watch",
+            _first_alignment_read(alignment, "현재 점수에서 크게 할인한 추가 요인은 제한적입니다."),
+        )
+    else:
+        trusted = "PDF 본문을 넣지 않아 리포트 문장별 검증은 제외했습니다. 지금 결론은 입력한 목표가·발행일과 DART/KRX 자료를 기준으로 계산했습니다."
+        discount = _first_alignment_read(alignment, "본문 없이 계산한 점수라 리포트 안의 세부 주장은 아직 별도로 확인해야 합니다.")
+    contested = _first_briefing_read(
+        briefing,
+        "contested",
+        batch_conclusion or "증권사별 의견 차이는 목표가·투자의견 비교표에서 확인합니다.",
+    )
+    evidence = " ".join(str(x) for x in (verdict.get("evidence_sentences") or [])[:2])
+    if not evidence:
+        evidence = "목표가 편차, 발행 이후 주가·수급, 필요한 실적 수준을 함께 대조했습니다."
+
+    st.markdown(
+        f"""
+        <div class="fs-result-sheet">
+          <div class="fs-result-kicker">리포트 점검 결과</div>
+          <div class="fs-result-title">{headline}</div>
+          <div class="fs-result-guide">{guide}</div>
+          <div class="fs-result-grid">
+            <section>
+              <h4>그대로 참고할 내용</h4>
+              <p>{html.escape(trusted)}</p>
+            </section>
+            <section>
+              <h4>그대로 믿기 어려운 내용</h4>
+              <p>{html.escape(discount)}</p>
+            </section>
+            <section>
+              <h4>리포트끼리 다른 부분</h4>
+              <p>{html.escape(contested)}</p>
+            </section>
+          </div>
+          <div class="fs-result-evidence"><b>숫자로 확인한 근거</b><span>{html.escape(evidence)}</span></div>
+        </div>
+        <style>
+        .fs-result-sheet {{
+            margin: 10px 0 16px;
+            padding: 15px 16px 14px;
+            border: 1px solid #DCE6EF;
+            border-left: 4px solid #173B57;
+            border-radius: 8px;
+            background: #FFFFFF;
+        }}
+        .fs-result-kicker {{
+            color: #185FA5;
+            font-size: 12px;
+            font-weight: 850;
+            margin-bottom: 5px;
+        }}
+        .fs-result-title {{
+            color: #17202A;
+            font-size: 18px;
+            font-weight: 900;
+            line-height: 1.35;
+            margin-bottom: 6px;
+        }}
+        .fs-result-guide {{
+            color: #334155;
+            font-size: 13.5px;
+            line-height: 1.58;
+            margin-bottom: 12px;
+        }}
+        .fs-result-grid {{
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            margin-top: 7px;
+        }}
+        .fs-result-grid section {{
+            border-top: 2px solid #E5EAF0;
+            padding-top: 8px;
+        }}
+        .fs-result-grid h4 {{
+            margin: 0 0 5px;
+            color: #173B57;
+            font-size: 13px;
+            font-weight: 850;
+        }}
+        .fs-result-grid p {{
+            margin: 0;
+            color: #334155;
+            font-size: 12.5px;
+            line-height: 1.55;
+        }}
+        .fs-result-evidence {{
+            margin-top: 12px;
+            padding-top: 10px;
+            border-top: 1px solid #E5EAF0;
+            color: #475569;
+            font-size: 12.5px;
+            line-height: 1.5;
+        }}
+        .fs-result-evidence b {{
+            color: #17202A;
+            margin-right: 8px;
+        }}
+        @media (max-width: 900px) {{
+            .fs-result-grid {{ grid-template-columns: 1fr; }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 dist = A["distribution"]
 tl = A["timeline"]
 rev = A["reverse"]
@@ -3028,7 +3188,7 @@ if "need_eps" not in rev and rev.get("current_eps") is not None:
 sig = "확인 필요" if tl["supply_gap"] else "양호"
 content_label = content_assessment.get("label", "본문 미반영")
 if content_assessment.get("score") is None:
-    content_caption = "PDF 본문을 읽으면 리포트별 의견 차이를 반영합니다"
+    content_caption = "PDF 본문 없음 · 본문 의견 검증은 점수에서 제외"
 else:
     content_caption = (
         f"논점 {len(content_view.get('theme_rows', []))}개 · "
@@ -3071,7 +3231,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "② 발행 이후 괴리",
     "③ 필요 실적",
     "④ 본문 의견 검증",
-    "종합평가",
+    "점검 결과",
     "근거·출처",
 ])
 
@@ -3366,39 +3526,44 @@ with tab4:
 with tab5:
     col_title, col_btn = st.columns([0.85, 0.15])
     with col_title:
-        st.subheader("종합평가")
+        st.subheader("리포트 점검 결과")
     with col_btn:
         st.download_button(
-            "📥 HTML",
+            "검증 리포트 HTML",
             html_report.encode("utf-8"),
             file_name=f"FinSight_{co['name']}_Report_Check.html",
             mime="text/html",
             width="stretch",
         )
     render_axis_brief(
-        "목표가와 투자의견을 그대로 받아들여도 되는가",
-        "목표가 편차, 발행 이후 괴리, 필요 실적, 본문 의견 검증, 객관분석 차감",
-        "신뢰도 점수와 리포트별 현실 부합도를 함께 정리합니다.",
+        "이 리포트의 목표가와 투자의견이 지금도 살아 있는가",
+        "업로드 PDF, DART 재무·공시, KRX 주가·수급, 발행 후 뉴스·이슈",
+        "믿어도 되는 말, 그대로 믿기 어려운 말, 증권사별로 갈리는 말을 분리합니다.",
     )
     render_detail_block(
-        "해석",
-        "투자의견을 그대로 받아들이지 않고 DART 재무, 발행 이후 괴리, 목표가 평균, 필요 실적, 리포트 본문 의견을 함께 대조한 결과입니다.",
+        "산출물",
+        "점수표가 아니라 리포트 점검 결과입니다. 매수·매도 타이밍을 찍지 않고, 리포트에서 어떤 문장을 판단 근거로 써도 되는지와 어떤 문장은 낮게 봐야 하는지를 정리합니다.",
         f"최종 {V['total']}점 · {V['grade']}등급",
         f"기초 {V.get('base_total', V['total'])}점 / 객관분석 -{V.get('alignment', {}).get('penalty', 0)}점",
     )
-    st.markdown(f"### {V['headline']}")
-    st.markdown(V["guide"])
     batch_conclusion = report_batch_conclusion(A)
+    alignment = V.get("alignment", {})
+    render_report_check_result(
+        V,
+        content_briefing,
+        content_view,
+        alignment,
+        has_report_body,
+        batch_conclusion,
+    )
     if batch_conclusion:
         st.markdown("#### 리포트 간 비교 결론")
         st.info(batch_conclusion)
     if content_briefing.get("headline"):
-        st.markdown("#### 리포트에서 가져갈 핵심")
-        st.markdown(content_briefing["headline"])
+        render_report_briefing(content_briefing)
     if content_view.get("summary"):
         st.markdown("#### 본문 의견 검증 결론")
         st.info(content_view["summary"])
-    alignment = V.get("alignment", {})
     if alignment:
         st.markdown("#### 신뢰도에 반영한 객관분석")
         for idx, factor in enumerate(alignment.get("factors", []), start=1):
@@ -3442,6 +3607,8 @@ with tab6:
     )
     formula = score_formula(A)
     st.markdown(f"**{formula['text']}**")
+    if not has_report_body:
+        st.caption(_reportless_score_note())
 
     st.markdown("#### 배점 기준")
     st.dataframe(pd.DataFrame(build_scoring_rulebook(A)), width="stretch", hide_index=True)
@@ -3455,60 +3622,115 @@ with tab6:
     st.markdown("#### 원자료 연결")
     st.dataframe(pd.DataFrame(build_source_audit(A)), width="stretch", hide_index=True)
 
-    # 발행 후 공시·외부 정황을 expander로 분류해서 보기 좋게 표시
+    # 원자료 링크는 표 아래에서 작게 펼쳐 보이도록 둔다.
     context = A.get("context") or {}
     disclosures = context.get("disclosures") or []
+    ownership = context.get("ownership") or []
     news = context.get("news") or []
     blogs = context.get("blogs") or []
 
-    def render_source_item(item: dict, item_type: str) -> None:
-        """공시·뉴스·블로그 항목을 간결한 카드 형식으로 렌더링."""
-        url = item.get("url") or ""
-        title = item.get("title") or ""
-        source = item.get("source") or ""
-        description = item.get("description") or ""
-        date_str = item.get("date") or ""
+    def source_detail_summary(item: dict, item_type: str) -> str:
+        if item_type == "ownership":
+            reporter = item.get("reporter") or "주요주주"
+            ratio_change = _num(item.get("ratio_change"))
+            shares_change = _num(item.get("share_change"))
+            change_bits = []
+            if ratio_change is not None:
+                change_bits.append(f"보유비율 {ratio_change:+.2f}%p")
+            if shares_change is not None:
+                change_bits.append(f"주식수 {shares_change:+,.0f}주")
+            reason = item.get("reason")
+            base = f"{reporter}의 지분 변동 공시입니다"
+            if change_bits:
+                base += f". {' · '.join(change_bits)} 변동이 확인됩니다"
+            if reason:
+                base += f". 사유: {reason}"
+            return _short_summary(base, 115)
+        if item_type in ("disclosure", "ownership"):
+            return summarize_post_event(item)
+        summary = item.get("description") or item.get("summary") or item.get("reason") or ""
+        if summary:
+            return _short_summary(summary, 115)
+        return "발행 이후 시장에서 함께 확인한 관련 정황입니다. 확정 근거가 아니라 원인 후보로만 반영합니다."
 
-        badge_map = {"disclosure": "📋", "news": "📰", "blog": "📝"}
-        badge = badge_map.get(item_type, "📌")
+    def source_detail_title(item: dict, item_type: str) -> str:
+        if item_type == "ownership":
+            reporter = item.get("reporter") or "주요주주"
+            ratio_change = _num(item.get("ratio_change"))
+            change = f" {ratio_change:+.2f}%p" if ratio_change is not None else ""
+            return f"{reporter} 지분공시{change}"
+        return str(item.get("title") or item.get("detail") or item.get("report_nm") or "원자료").strip()
 
-        cols = st.columns([0.03, 0.97])
-        with cols[0]:
-            st.write(badge)
-        with cols[1]:
-            if url:
-                st.markdown(f"**[{title}]({url})**")
-            else:
-                st.markdown(f"**{title}**")
+    def render_source_detail_expander(label: str, items: list[tuple[dict, str]]) -> None:
+        if not items:
+            return
+        with st.expander(f"{label} ({len(items)}건)", expanded=False):
+            st.caption("점수표에 연결된 원자료입니다. 제목을 누르면 원문으로 이동하고, URL은 확인용으로 그대로 남겼습니다.")
+            for item, item_type in items:
+                title = source_detail_title(item, item_type)
+                source = item.get("source") or ("DART" if item_type in ("disclosure", "ownership") else "Naver")
+                date_str = _normalize_event_date(str(item.get("date") or ""))[:16]
+                url = str(item.get("url") or "")
+                summary = source_detail_summary(item, item_type)
+                title_html = (
+                    f"<a href='{html.escape(url)}' target='_blank' style='color:#185FA5;text-decoration:none;font-weight:800'>"
+                    f"{html.escape(title)}</a>"
+                    if url else f"<span style='font-weight:800;color:#17202A'>{html.escape(title)}</span>"
+                )
+                url_html = (
+                    f"<div class='fs-source-url'>웹주소: {html.escape(url)}</div>"
+                    if url else "<div class='fs-source-url'>웹주소: 원문 링크 없음</div>"
+                )
+                st.markdown(
+                    f"""
+                    <div class="fs-source-row">
+                      <div class="fs-source-meta">{html.escape(date_str)} · {html.escape(str(source))}</div>
+                      <div class="fs-source-title">주제: {title_html}</div>
+                      <div class="fs-source-summary">요약: {html.escape(summary)}</div>
+                      {url_html}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            st.markdown(
+                """
+                <style>
+                .fs-source-row {
+                    padding: 7px 0 8px;
+                    border-bottom: 1px solid #E5EAF0;
+                    font-size: 12px;
+                    line-height: 1.45;
+                }
+                .fs-source-meta {
+                    color: #64748B;
+                    font-size: 11px;
+                    font-weight: 750;
+                    margin-bottom: 2px;
+                }
+                .fs-source-title {
+                    color: #17202A;
+                    font-size: 12.5px;
+                    margin-bottom: 2px;
+                }
+                .fs-source-summary {
+                    color: #475569;
+                    font-size: 12px;
+                    margin-bottom: 2px;
+                }
+                .fs-source-url {
+                    color: #94A3B8;
+                    font-size: 10.8px;
+                    word-break: break-all;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
 
-            caption_parts = []
-            if source:
-                caption_parts.append(source)
-            if date_str:
-                caption_parts.append(date_str[:10])
-            if description:
-                summary = description[:70].strip()
-                if len(description) > 70:
-                    summary += "..."
-                caption_parts.append(summary)
-
-            if caption_parts:
-                st.caption(" · ".join(caption_parts))
-
-    if disclosures:
-        with st.expander(f"📋 발행 후 공시 ({len(disclosures)}건)", expanded=False):
-            for item in disclosures:
-                render_source_item(item, "disclosure")
-
-    if news:
-        with st.expander(f"📰 뉴스 ({len(news)}건)", expanded=False):
-            for item in news:
-                render_source_item(item, "news")
-
-    if blogs:
-        with st.expander(f"📝 블로그·해석 ({len(blogs)}건)", expanded=False):
-            for item in blogs:
-                render_source_item(item, "blog")
+    disclosure_items = [(item, "disclosure") for item in disclosures] + [(item, "ownership") for item in ownership]
+    external_items = [(item, "news") for item in news] + [(item, "blog") for item in blogs]
+    render_source_detail_expander("발행 후 공시·지분공시 원문", disclosure_items)
+    render_source_detail_expander("외부 정황 원문", external_items)
 
     st.markdown("#### 자료 흐름")
     st.dataframe(pd.DataFrame(build_data_source_logic(A)), width="stretch", hide_index=True)

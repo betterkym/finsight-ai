@@ -115,6 +115,13 @@ def _dart_event_status(context: dict) -> str:
     return "연결 · 발행 이후 표에 잡힌 공시/지분공시 없음"
 
 
+def _has_report_body(analysis: dict) -> bool:
+    report = analysis.get("report") or {}
+    if str(report.get("text_excerpt") or "").strip():
+        return True
+    return any(str(item.get("text_excerpt") or "").strip() for item in analysis.get("report_batch") or [])
+
+
 def _score_label(axis: dict) -> str:
     if axis.get("uncounted"):
         return "미집계"
@@ -237,13 +244,16 @@ def score_formula(analysis: dict) -> dict:
     base_total = verdict.get("base_total", verdict.get("total", 0))
     penalty = (verdict.get("alignment") or {}).get("penalty", 0)
     final = verdict.get("total", 0)
+    report_note = ""
+    if not _has_report_body(analysis):
+        report_note = " PDF 본문이 없어 본문 의견 검증 차감은 적용하지 않았습니다."
     return {
         "raw": raw,
         "max_possible": max_possible,
         "base_total": base_total,
         "penalty": penalty,
         "final": final,
-        "text": f"기초점수 = ({raw}/{max_possible}) x 100 = {base_total}점, 객관분석 차감 {penalty}점, 최종 {final}점",
+        "text": f"기초점수 = ({raw}/{max_possible}) x 100 = {base_total}점, 객관분석 차감 {penalty}점, 최종 {final}점.{report_note}",
     }
 
 
@@ -283,6 +293,9 @@ def build_source_audit(analysis: dict) -> list[dict]:
     context = analysis.get("context") or {}
     kpis = analysis.get("kpis")
     dart_snapshot = _latest_kpi_snapshot(kpis)
+    has_report_body = _has_report_body(analysis)
+    content_assessment = analysis.get("report_content_assessment") or {}
+    theme_count = len((analysis.get("report_content") or {}).get("theme_rows", []) or [])
 
     report_source = "사용자 입력"
     if report.get("file_name") and report.get("pdf_url"):
@@ -309,12 +322,17 @@ def build_source_audit(analysis: dict) -> list[dict]:
         },
         {
             "자료": "리포트 본문 의견",
-            "출처": "업로드 PDF 텍스트",
+            "출처": "업로드 PDF 텍스트" if has_report_body else "PDF 본문 미업로드",
             "확인값": (
-                f"분석 논점 {len((analysis.get('report_content') or {}).get('theme_rows', []) or [])}개, "
-                f"본문 검증 {(analysis.get('report_content_assessment') or {}).get('label', '미반영')}"
+                f"분석 논점 {theme_count}개, 본문 검증 {content_assessment.get('label', '미반영')}"
+                if has_report_body else
+                "본문 의견 검증 미반영"
             ),
-            "점수 연결": "본문 의견 검증 탭과 FinSight 객관분석 추가 차감에 사용합니다.",
+            "점수 연결": (
+                "본문 의견 검증 탭과 FinSight 객관분석 추가 차감에 사용합니다."
+                if has_report_body else
+                "이번 점수에는 본문 의견 차감을 넣지 않고, 목표가 편차·발행 이후 괴리·필요 실적·객관 데이터 이상징후로 계산합니다."
+            ),
         },
         {
             "자료": "증권사 목표가 평균",
@@ -363,6 +381,7 @@ def build_data_source_logic(analysis: dict) -> list[dict]:
     report_batch = analysis.get("report_batch") or []
     context = analysis.get("context") or {}
     kpis = analysis.get("kpis")
+    has_report_body = _has_report_body(analysis)
     external = context.get("external_drivers") or {}
     status_by_source = {
         str(row.get("source", "")).lower(): row
@@ -388,9 +407,17 @@ def build_data_source_logic(analysis: dict) -> list[dict]:
         {
             "검증 단계": "본문 의견",
             "확인 항목": "PDF 본문에서 반복되는 실적·마진·수급·현금흐름 관련 문장",
-            "자료": "업로드 PDF 텍스트 추출",
-            "분석 연결": "본문 의견을 리포트끼리 비교하고 DART·주가·수급과 대조해 객관분석 차감에 반영합니다.",
-            "반영 상태": f"본문 논점 {len((analysis.get('report_content') or {}).get('theme_rows', []) or [])}개",
+            "자료": "업로드 PDF 텍스트 추출" if has_report_body else "PDF 본문 미업로드",
+            "분석 연결": (
+                "본문 의견을 리포트끼리 비교하고 DART·주가·수급과 대조해 객관분석 차감에 반영합니다."
+                if has_report_body else
+                "이번 실행에서는 본문 의견 검증을 제외하고 목표가·발행 이후 변화·필요 실적 중심으로 계산합니다."
+            ),
+            "반영 상태": (
+                f"본문 논점 {len((analysis.get('report_content') or {}).get('theme_rows', []) or [])}개"
+                if has_report_body else
+                "미반영"
+            ),
         },
         {
             "검증 단계": "목표가 편차",

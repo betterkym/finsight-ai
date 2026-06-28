@@ -407,7 +407,7 @@ def apply_alignment_to_verdict(verdict: dict, alignment: dict) -> dict:
     if penalty:
         lead = alignment.get("factors", [{}])[0]
         out["guide"] = (
-            f"{out.get('guide', '')} FinSight 객관 분석 기준으로는 '{lead.get('title', '추가 부담')}' 때문에 "
-            f"신뢰도 {penalty}점을 추가 차감했습니다."
+            f"{out.get('guide', '')} 추가로 객관분석에서는 '{lead.get('title', '추가 부담')}'이 가장 큰 부담으로 잡혀 "
+            f"신뢰도 {penalty}점을 낮췄습니다. 이 부분이 해소되기 전까지는 리포트의 긍정 결론을 한 번 할인해서 보는 쪽이 맞습니다."
         )
     return out
