@@ -4000,13 +4000,27 @@ with tab5:
     with col_title:
         st.subheader("리포트 종합점검결과")
     with col_btn:
-        st.download_button(
-            "종합점검 리포트 HTML",
-            html_report.encode("utf-8"),
-            file_name=f"FinSight_{co['name']}_Report_Check.html",
-            mime="text/html",
-            width="stretch",
-        )
+        btn_col1, btn_col2 = st.columns(2, gap="small")
+        with btn_col1:
+            st.download_button(
+                "📄 HTML 다운로드",
+                html_report.encode("utf-8"),
+                file_name=f"FinSight_{co['name']}_Report_Check.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+        with btn_col2:
+            try:
+                pdf_report = generate_retail_pdf_report(A)
+                st.download_button(
+                    "📕 PDF 다운로드",
+                    pdf_report,
+                    file_name=f"FinSight_{co['name']}_Report_Check.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.warning(f"PDF 생성 에러: {str(e)[:50]}")
     render_axis_brief(
         "이 리포트의 목표가와 투자의견이 지금도 살아 있는가",
         "업로드 PDF, DART 재무·공시, KRX 주가·수급, 발행 후 뉴스·이슈",

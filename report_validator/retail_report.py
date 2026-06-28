@@ -566,13 +566,17 @@ def generate_retail_html_report(analysis: dict) -> str:
     if briefing.get("headline"):
         briefing_html = f"<div class='briefing'><p>{_e(briefing.get('headline'))}</p>{''.join(briefing_sections)}</div>"
     update_audit = "".join(
-        "<tr>"
-        f"<td>{_e(row['평가 구분'])}</td>"
-        f"<td>{_e(row['항목'])}</td>"
-        f"<td>{_e(row['판단'])}</td>"
-        f"<td>{_e(row['근거'])}</td>"
-        f"<td>{_e(row['점수 영향'])}</td>"
-        "</tr>"
+        f"<div class='audit-card'>"
+        f"<div class='audit-header'>"
+        f"<span class='badge'>{_e(row['평가 구분'][:2])}</span>"
+        f"<h3>{_e(row['항목'])}</h3>"
+        f"</div>"
+        f"<div class='audit-body'>"
+        f"<div class='audit-section'><strong>📌 판단</strong><p>{_e(row['판단'])}</p></div>"
+        f"<div class='audit-section'><strong>📊 근거</strong><p>{_e(row['근거'])}</p></div>"
+        f"</div>"
+        f"<div class='audit-footer'><span class='impact'>⭐ {_e(row['점수 영향'])}</span></div>"
+        f"</div>"
         for row in model["update_audit"]
     )
     source_audit = "".join(
@@ -622,6 +626,16 @@ def generate_retail_html_report(analysis: dict) -> str:
     li {{ margin:13px 0; }}
     li p {{ margin:5px 0; line-height:1.65; }}
     li span {{ color:#667085; font-size:13px; }}
+    .audit-card {{ border:1px solid #DCE2E8; background:#fff; border-radius:6px; padding:16px; margin:12px 0; }}
+    .audit-header {{ display:flex; align-items:center; gap:10px; margin-bottom:14px; border-bottom:1px solid #EEF2F7; padding-bottom:10px; }}
+    .audit-header .badge {{ background:#F3F6F9; color:#173B57; font-weight:700; font-size:12px; padding:4px 8px; border-radius:3px; min-width:32px; text-align:center; }}
+    .audit-header h3 {{ margin:0; font-size:15px; color:#17202A; flex:1; }}
+    .audit-body {{ margin:12px 0; }}
+    .audit-section {{ margin-bottom:10px; }}
+    .audit-section strong {{ display:block; color:#364152; font-size:13px; font-weight:700; margin-bottom:4px; }}
+    .audit-section p {{ margin:0; color:#52606D; font-size:14px; line-height:1.6; }}
+    .audit-footer {{ text-align:right; padding-top:8px; border-top:1px solid #F0F3F7; }}
+    .audit-footer .impact {{ color:#D97706; font-weight:700; font-size:14px; }}
     footer {{ margin-top:42px; color:#667085; font-size:12px; line-height:1.6; }}
   </style>
 </head>
