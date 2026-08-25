@@ -216,6 +216,55 @@ def _score_stance(total: int | float) -> tuple[str, str]:
     return "신뢰도 낮음", "현재 확인되는 숫자와 발행 이후 흐름만 보면 리포트 결론을 그대로 쓰기 어렵습니다."
 
 
+def _personalized_summary(analysis: dict) -> dict:
+    profile = analysis.get("investor_profile") or {}
+    status = profile.get("status") or ""
+    avg_price = _num(profile.get("avg_price"))
+    weight = _num(profile.get("weight_pct"))
+    horizon = profile.get("horizon") or ""
+    if not any([status, avg_price, weight, horizon]):
+        return {}
+
+    company = analysis.get("company") or {}
+    report = analysis.get("report") or {}
+    verdict = analysis.get("verdict") or {}
+    current = _num(company.get("current_price"))
+    target = _num(report.get("target_price"))
+    trust = max(0, min(100, _num(verdict.get("total")) or 0))
+    reference = current + (target - current) * (trust / 100) if current and target else None
+    pnl = (current / avg_price - 1) * 100 if current and avg_price else None
+    target_gap = (target / avg_price - 1) * 100 if target and avg_price else None
+    reference_gap = (reference / avg_price - 1) * 100 if reference and avg_price else None
+
+    lines = []
+    if status:
+        lines.append(f"입력 상태는 '{status}'입니다.")
+    if avg_price and current:
+        lines.append(f"현재가는 평단 대비 {_f(pnl, '%')}입니다.")
+    if avg_price and target:
+        lines.append(f"리포트 목표가 기준 평단 대비 여력은 {_f(target_gap, '%')}입니다.")
+    if avg_price and reference:
+        lines.append(f"FinSight 보수적 참고가 기준으로는 {_f(reference_gap, '%')}입니다.")
+    if weight:
+        lines.append(f"보유 비중은 {weight:.0f}%로 입력됐습니다.")
+    if horizon:
+        lines.append(f"투자 기간은 {horizon}로 입력됐습니다.")
+
+    if avg_price and reference and avg_price > reference:
+        read = "평단가가 보수적 참고가보다 높아, 리포트 목표가를 회복 근거로 그대로 쓰기보다 발행 이후 수급과 다음 실적 확인이 먼저입니다."
+    elif status in ("신규 매수 검토", "추가 매수 검토"):
+        read = "진입을 검토 중이라면 목표가 숫자보다 가격 반영률, 수급 정합성, 업데이트 필요성을 먼저 확인하는 편이 적합합니다."
+    else:
+        read = "이 입력은 매수·매도 지시가 아니라, 기준 리포트 판정을 내 계좌 상황에 맞게 읽기 위한 보조 해석입니다."
+
+    return {
+        "title": f"{status or '내 상황'} 기준 해석",
+        "reference": reference,
+        "read": read,
+        "lines": lines,
+    }
+
+
 def _opinion_distribution(reports: list[dict]) -> str:
     counts: dict[str, int] = {}
     for item in reports:
@@ -416,6 +465,7 @@ def build_retail_report_model(analysis: dict) -> dict:
         "report": report,
         "verdict": verdict,
         "summary": summary,
+        "personalized": _personalized_summary(analysis),
         "as_of": dt.date.today().isoformat(),
         "score_formula": score_formula(analysis),
         "score_rulebook": build_scoring_rulebook(analysis),
@@ -462,6 +512,18 @@ def generate_retail_html_report(analysis: dict) -> str:
         f"<div class='key-card'><span>{_e(item.get('label'))}</span><b>{_e(item.get('value'))}</b><em>{_e(item.get('read'))}</em></div>"
         for item in analyst.get("key_numbers", [])
     )
+    personal = model.get("personalized") or {}
+    personal_lines = "".join(f"<li>{_e(line)}</li>" for line in personal.get("lines", []))
+    personal_html = ""
+    if personal:
+        personal_html = f"""
+  <section class="view-box personal-box">
+    <h2>내 상황 기준 해석</h2>
+    <p><b>{_e(personal.get('title'))}</b> — {_e(personal.get('read'))}</p>
+    <p>보수적 참고가: <b>{_e(_won(personal.get('reference')))}</b></p>
+    <ul>{personal_lines}</ul>
+  </section>
+"""
     decision_items = "".join(
         f"<li><b>{_e(item.get('title'))}</b><p>{_e(item.get('read'))}</p><span>{_e(item.get('evidence'))}</span></li>"
         for item in analyst.get("decision_points", [])
@@ -636,6 +698,8 @@ def generate_retail_html_report(analysis: dict) -> str:
     .audit-section p {{ margin:0; color:#52606D; font-size:14px; line-height:1.6; }}
     .audit-footer {{ text-align:right; padding-top:8px; border-top:1px solid #F0F3F7; }}
     .audit-footer .impact {{ color:#D97706; font-weight:700; font-size:14px; }}
+    .personal-box {{ border-color:#E8DDCA; background:#FFFDF8; }}
+    .personal-box ul {{ margin:8px 0 0 18px; color:#52606D; line-height:1.6; }}
     footer {{ margin-top:42px; color:#667085; font-size:12px; line-height:1.6; }}
   </style>
 </head>
@@ -654,6 +718,7 @@ def generate_retail_html_report(analysis: dict) -> str:
   </section>
 
   <div class="key-grid">{key_cards}</div>
+  {personal_html}
 
   <h2>1. 이 리포트를 지금 어떻게 볼까</h2>
   <ul class="decision-list">{decision_items}</ul>
@@ -747,6 +812,15 @@ def generate_retail_pdf_report(analysis: dict) -> bytes:
     write(f"신뢰도 {verdict['total']}/100 · {verdict['grade']}등급", 16, "B", 8)
     write(model["summary"], 11)
     pdf.ln(2)
+
+    personal = model.get("personalized") or {}
+    if personal:
+        write("내 상황 기준 해석", 14, "B")
+        write(f"{personal.get('title')} · 보수적 참고가 {_won(personal.get('reference'))}", 11, "B")
+        write(personal.get("read", ""), 10)
+        for line in personal.get("lines", [])[:5]:
+            write(f"- {line}", 9)
+        pdf.ln(1)
 
     write("1. 검증 결과", 14, "B")
     for row in model["axis_rows"]:

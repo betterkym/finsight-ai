@@ -945,6 +945,27 @@ def get_external_news_context(company: str, limit: int = 24) -> list[dict]:
     return _dedupe_context(items, limit)
 
 
+def get_trade_news_context(company: str, limit: int = 32) -> list[dict]:
+    """Search news the way a retail investor would check around a trade.
+
+    This intentionally keeps broad company/news/price queries instead of only
+    analyst-style themes, because the judgement coach needs to reconstruct what
+    the user may actually have seen before clicking buy/sell.
+    """
+    queries = [
+        f"{company}",
+        f"{company} 주가",
+        f"{company} 시간외",
+        f"{company} 공시",
+        f"{company} 실적",
+        f"{company} 수급",
+    ]
+    items = []
+    for query in queries:
+        items.extend(_naver_search(NAVER_NEWS_BASE, query, max(4, limit // len(queries))))
+    return _dedupe_context(items, limit)
+
+
 def get_external_blog_context(company: str, limit: int = 10) -> list[dict]:
     """Fetch explicitly labeled, unverified interpretations for expectation-gap discovery."""
     queries = [f"{company} 주가 이유", f"{company} 실적 주가 괴리"]

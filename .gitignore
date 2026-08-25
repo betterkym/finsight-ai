@@ -14,3 +14,8 @@ tmp/
 .cache/
 outputs/
 .matplotlib/
+
+# 개인 문서 변환 작업물 (프로젝트 무관)
+converted_docx_hwp/
+converted_hwp_docx/
+.codex-cheddr/

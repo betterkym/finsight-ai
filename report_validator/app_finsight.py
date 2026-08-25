@@ -1,12 +1,8 @@
-"""FinSight — 리포트 신뢰도 검증.
+"""FinSight — 한국주식 매매 진단 코치.
 
-증권사 리포트의 목표가와 투자의견을 DART 재무·공시, KRX 주가·수급,
-증권사 목표가 평균, 발행 이후 공시·뉴스·지분 변동으로 다시 대조해
-신뢰도 점수와 종합 해석 보고서를 제공한다.
-  ① 목표가 편차: 다른 증권사와 비교해 목표가가 얼마나 높은가
-  ② 발행 이후 괴리: 발행 후 주가·수급·공시가 리포트와 어긋났는가
-  ③ 필요 실적: 목표가를 위해 필요한 성장률이 현실적인가
-  ④ 본문 의견 검증: 리포트 안의 핵심 의견이 서로/팩트와 맞는가
+체결 시점을 기준으로 가격·거래량·수급·공시·뉴스·리포트 맥락을 재구성해
+개인투자자가 같은 실수를 반복하지 않도록 매매 진단서를 제공한다.
+기존 증권사 리포트 검증은 보조 모드로 유지한다.
 """
 from __future__ import annotations
 
@@ -63,6 +59,8 @@ from report_validator.timeline_module import (
 from report_validator.scoring_module import build_report_verdict
 from report_validator.report_assessor import build_alignment_assessment, apply_alignment_to_verdict
 from report_validator.retail_report import generate_retail_html_report, generate_retail_pdf_report
+from report_validator.diagnosis_templates import build_detailed_judgement_flow, build_integrated_coaching_report
+from report_validator.insight_packet import build_insight_packet
 from report_validator.evidence_audit import (
     build_data_source_logic,
     build_dart_health_summary,
@@ -261,6 +259,31 @@ def fetch_report_context(company_name: str, stock_code: str) -> dict:
     return context
 
 
+@st.cache_data(ttl=1800, show_spinner="뉴스·공시 판단 맥락 확인 중...")
+def fetch_trade_context(company_name: str, stock_code: str) -> dict:
+    context = fetch_report_context(company_name, stock_code)
+    try:
+        trade_news = dc.get_trade_news_context(company_name, limit=36)
+        context["news"] = _dedupe_context_items([*(trade_news or []), *(context.get("news") or [])], limit=36)
+    except Exception as exc:
+        context.setdefault("errors", []).append(f"trade news: {exc}")
+    return context
+
+
+def _dedupe_context_items(items: list[dict], limit: int = 36) -> list[dict]:
+    seen = set()
+    out = []
+    for item in items:
+        key = item.get("url") or item.get("title")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_price_at_date(stock_code: str, ymd: str) -> float | None:
     return fetch_price_at_date(stock_code, ymd)
@@ -430,6 +453,28 @@ def report_identity(item: dict) -> str:
     return f"{broker} · {date} · {title}"
 
 
+def report_short_identity(item: dict) -> str:
+    broker = item.get("broker") or "증권사 확인 필요"
+    date = item.get("pub_date") or "발행일 확인 필요"
+    target = item.get("target_price")
+    target_text = f" · {int(target):,}원" if target else ""
+    return f"{broker} · {date}{target_text}"
+
+
+def _report_match_key(item: dict | None) -> tuple:
+    item = item or {}
+    return (
+        str(item.get("broker") or ""),
+        str(item.get("pub_date") or ""),
+        int(_num(item.get("target_price")) or 0),
+        str(item.get("file_name") or item.get("title") or ""),
+    )
+
+
+def _same_report(left: dict | None, right: dict | None) -> bool:
+    return bool(left and right and _report_match_key(left) == _report_match_key(right))
+
+
 def reports_missing_target(reports: list[dict]) -> list[dict]:
     return [item for item in reports if not item.get("target_price")]
 
@@ -437,6 +482,89 @@ def reports_missing_target(reports: list[dict]) -> list[dict]:
 def comparable_reports(reports: list[dict]) -> list[dict]:
     """Reports usable in the target-price/opinion comparison table."""
     return [item for item in reports if item.get("target_price") and item.get("opinion")]
+
+
+def _date_rank(value: str | None) -> int:
+    try:
+        return datetime.date.fromisoformat(str(value or "")[:10]).toordinal()
+    except ValueError:
+        return 0
+
+
+def select_basis_report(
+    reports: list[dict],
+    fallback: dict,
+    *,
+    stock_code: str,
+    current_price: float | None,
+    consensus: dict | None,
+) -> dict:
+    """Pick the single report that the final score should evaluate.
+
+    Multi-report uploads are comparison material, not one blended report. The
+    final score must have one clear subject, so we choose the report that is
+    least contradicted by post-publication price/target evidence.
+    """
+    comparable = comparable_reports(reports)
+    if not comparable:
+        return {
+            "report": fallback,
+            "mode": "manual",
+            "score": None,
+            "reason": "직접 입력한 목표가와 발행일을 기준으로 점수화합니다.",
+            "explanation": "비교 가능한 업로드 리포트가 없어 사용자가 입력한 리포트 정보를 검증 기준으로 삼았습니다.",
+        }
+
+    consensus_mean = (consensus or {}).get("price_target_mean")
+    candidates = []
+    for item in comparable:
+        price_info = None
+        price_at_pub = None
+        if stock_code and item.get("pub_date"):
+            price_info = cached_price_at_date_info(stock_code, item.get("pub_date"))
+            price_at_pub = price_info.get("price") if price_info else None
+        score, reason = _batch_fit_score(
+            target=_num(item.get("target_price")),
+            price_at_pub=price_at_pub,
+            current_price=current_price,
+            consensus_mean=consensus_mean,
+            opinion=item.get("opinion") or "",
+        )
+        candidates.append({
+            "item": item,
+            "score": score,
+            "reason": reason,
+            "date_rank": _date_rank(item.get("pub_date")),
+            "price_at_pub": price_at_pub,
+            "price_date": (price_info or {}).get("date"),
+        })
+
+    scored = [row for row in candidates if row["score"] is not None]
+    if scored:
+        selected = max(scored, key=lambda row: (row["score"], row["date_rank"]))
+        reason = selected["reason"] or "목표가, 발행일 이후 주가, 현재 남은 여력을 함께 비교"
+        explanation = (
+            "여러 리포트 중 목표가 위치와 발행 이후 가격 반응이 현재 데이터와 가장 덜 어긋난 리포트를 "
+            "기준 리포트로 잡았습니다. 최종 신뢰도 점수는 이 기준 리포트에 대한 점수입니다."
+        )
+        return {
+            "report": selected["item"],
+            "mode": "auto",
+            "score": selected["score"],
+            "reason": reason,
+            "explanation": explanation,
+            "price_at_pub": selected["price_at_pub"],
+            "price_at_pub_date": selected["price_date"],
+        }
+
+    selected = max(candidates, key=lambda row: row["date_rank"]) if candidates else {"item": fallback}
+    return {
+        "report": selected["item"],
+        "mode": "latest_complete",
+        "score": None,
+        "reason": "발행일 주가를 확인하지 못해 목표가·투자의견을 읽은 최신 리포트를 기준으로 삼았습니다.",
+        "explanation": "가격 검증 데이터가 제한되어 자동 현실 부합도 점수 대신 최신 비교 가능 리포트를 기준으로 계산했습니다.",
+    }
 
 
 def missing_comparison_notes(reports: list[dict]) -> list[str]:
@@ -582,7 +710,11 @@ def extract_report_metadata(file_name: str, text: str) -> dict:
     }
 
 
-def build_report_comparison_rows(reports: list[dict], mean_target: float | None) -> list[dict]:
+def build_report_comparison_rows(
+    reports: list[dict],
+    mean_target: float | None,
+    basis_report: dict | None = None,
+) -> list[dict]:
     rows = []
     for item in comparable_reports(reports):
         target = item.get("target_price")
@@ -596,6 +728,7 @@ def build_report_comparison_rows(reports: list[dict], mean_target: float | None)
             elif gap <= -15:
                 verdict = "평균보다 보수적"
         rows.append({
+            "구분": "기준 리포트" if _same_report(item, basis_report) else "비교 리포트",
             "증권사": item.get("broker") or "확인 필요",
             "발행일": item.get("pub_date") or "확인 필요",
             "투자의견": item.get("opinion") or "",
@@ -1302,7 +1435,15 @@ def report_batch_conclusion(analysis: dict) -> str:
     stats = report_batch_stats(reports)
     timeline = analysis.get("report_batch_timeline") or {}
     summary = timeline.get("summary") or {}
+    report = analysis.get("report") or {}
     parts = []
+    if len(reports) > 1:
+        basis_score = report.get("basis_score")
+        basis_score_text = f" · 현실 부합도 {basis_score:.0f}점" if basis_score is not None else ""
+        parts.append(
+            f"FinSight는 이번 묶음에서 {report_short_identity(report)}을 기준 리포트로 잡았습니다{basis_score_text}. "
+            "따라서 최종 신뢰도는 업로드 묶음 전체 평균이 아니라 이 기준 리포트의 사용 가능성 점수입니다."
+        )
     if stats.get("target_count"):
         parts.append(
             f"추출된 목표가는 {stats['min_target']:,.0f}~{stats['max_target']:,.0f}원 범위이고 "
@@ -1311,7 +1452,7 @@ def report_batch_conclusion(analysis: dict) -> str:
     opinion_text = " · ".join(f"{key} {value}개" for key, value in stats.get("opinions", {}).items())
     if opinion_text:
         parts.append(f"투자의견 분포는 {opinion_text}입니다.")
-    if summary.get("best_broker"):
+    if summary.get("best_broker") and len(reports) <= 1:
         score = summary.get("best_score")
         score_text = f"({score:.0f}점)" if score is not None else ""
         parts.append(
@@ -1329,7 +1470,11 @@ def render_report_batch_distribution(analysis: dict) -> None:
     if not reports:
         return
     stats = report_batch_stats(reports)
-    rows = build_report_comparison_rows(reports, (analysis.get("consensus") or {}).get("price_target_mean"))
+    rows = build_report_comparison_rows(
+        reports,
+        (analysis.get("consensus") or {}).get("price_target_mean"),
+        analysis.get("report"),
+    )
     st.markdown("#### 증권사별 목표가·투자의견 비교")
     d1, d2, d3, d4 = st.columns(4)
     with d1:
@@ -1362,7 +1507,7 @@ def render_report_batch_overview(analysis: dict) -> None:
         return
     stats = report_batch_stats(reports)
     consensus_mean = (analysis.get("consensus") or {}).get("price_target_mean")
-    rows = build_report_comparison_rows(reports, consensus_mean)
+    rows = build_report_comparison_rows(reports, consensus_mean, analysis.get("report"))
 
     st.markdown("#### 업로드 리포트 비교")
     c1, c2, c3, c4 = st.columns(4)
@@ -1474,6 +1619,7 @@ def build_batch_post_publish_analysis(
     current_price: float | None,
     consensus: dict | None,
     fallback_price_at_pub: float | None,
+    basis_report: dict | None = None,
 ) -> dict:
     if not reports:
         return {"rows": [], "summary": {}}
@@ -1501,6 +1647,7 @@ def build_batch_post_publish_analysis(
             opinion=item.get("opinion") or "",
         )
         row = {
+            "구분": "기준 리포트" if _same_report(item, basis_report) else "비교 리포트",
             "증권사": item.get("broker") or "확인 필요",
             "발행일": pub_date or "확인 필요",
             "투자의견": item.get("opinion") or "",
@@ -1515,7 +1662,7 @@ def build_batch_post_publish_analysis(
             "판단 근거": reason,
         }
         rows.append(row)
-        raw_rows.append({**row, "_score": score, "_price_at_pub": price_at_pub, "_realized": realized})
+        raw_rows.append({**row, "_source_report": item, "_score": score, "_price_at_pub": price_at_pub, "_realized": realized})
     price_values = [row["_price_at_pub"] for row in raw_rows if row.get("_price_at_pub")]
     avg_price_at_pub = sum(price_values) / len(price_values) if price_values else None
     current = _num(current_price)
@@ -1531,6 +1678,8 @@ def build_batch_post_publish_analysis(
             "best_broker": best.get("증권사") if best else "",
             "best_score": best.get("_score") if best else None,
             "best_reason": best.get("판단 근거") if best else "",
+            "basis_broker": (basis_report or {}).get("broker") or "",
+            "basis_identity": report_short_identity(basis_report or {}) if basis_report else "",
         },
     }
 
@@ -2201,8 +2350,13 @@ def build_post_report_events(
     return selected
 
 
-PRODUCT_TITLE = "FinSight — 리포트 종합점검결과"
+PRODUCT_TITLE = "FinSight — 한국주식 매매 진단서"
 PRODUCT_COPY = (
+    "매수·매도 시점을 기준으로 가격, 거래량, KRX 수급, DART 공시, 뉴스, 리포트를 다시 붙여 "
+    "이번 판단이 어떤 흐름 위에서 일어났는지 진단합니다. 결론을 찍어주는 리딩이 아니라, "
+    "놓친 신호와 다음번 판단 순서를 남기는 매매 코칭 리포트입니다."
+)
+REPORT_PRODUCT_COPY = (
     "목표가와 투자의견을 그대로 받아들이기 전에 DART 재무·공시, KRX 주가·수급, "
     "증권사 목표가 평균, 발행 이후 뉴스·지분 변동, 업로드한 리포트 본문을 대조합니다. "
     "목표가와 투자의견을 어느 정도 신뢰할 수 있는지 점수화하고, 현재 주가와의 차이까지 해석합니다."
@@ -2445,8 +2599,11 @@ def render_validation_flow(compact: bool = False) -> None:
     )
 
 
-def render_product_header() -> None:
-    """Render the validator title with a direct entry to the old analyst app."""
+def render_product_header(
+    subtitle: str = "한국주식 매매 진단서",
+    copy: str | None = None,
+) -> None:
+    """Render the product title with a direct entry to the old analyst app."""
     title_col, mode_col = st.columns([5.0, 1.15])
     with title_col:
         st.markdown(
@@ -2458,7 +2615,7 @@ def render_product_header() -> None:
             "box-shadow:0 2px 6px rgba(27,42,74,0.25)'>F</div>"
             "<div>"
             "<div style='font-size:23px;font-weight:850;color:#131A24;letter-spacing:-0.02em;line-height:1.1'>FinSight</div>"
-            "<div style='font-size:12px;font-weight:650;color:#6B7684;margin-top:2px'>리포트 종합점검결과</div>"
+            f"<div style='font-size:12px;font-weight:650;color:#6B7684;margin-top:2px'>{html.escape(subtitle)}</div>"
             "</div></div>",
             unsafe_allow_html=True,
         )
@@ -2467,12 +2624,1965 @@ def render_product_header() -> None:
         if st.button("Analyst Mode", key="open_analyst_mode", width="stretch"):
             st.query_params["view"] = "analyst"
             st.rerun()
-    st.caption(PRODUCT_COPY)
+    st.caption(copy or PRODUCT_COPY)
+
+
+TRADE_REASON_OPTIONS = [
+    "뉴스/기사",
+    "공시/실적",
+    "시간외 상승",
+    "급등 추격",
+    "낙폭과대",
+    "외국인·기관 수급",
+    "증권사 리포트",
+    "커뮤니티/지인 추천",
+    "차트 자리",
+    "이유가 애매함",
+]
+
+
+def _to_date(value) -> datetime.date | None:
+    try:
+        if isinstance(value, datetime.datetime):
+            return value.date()
+        if isinstance(value, datetime.date):
+            return value
+        return datetime.date.fromisoformat(str(value)[:10])
+    except Exception:
+        return None
+
+
+def _date_text(value) -> str:
+    dt = _to_date(value)
+    return dt.strftime("%Y-%m-%d") if dt else ""
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_trade_price_window(
+    stock_code: str,
+    buy_ymd: str,
+    sell_ymd: str | None = None,
+) -> pd.DataFrame:
+    """Fetch a compact OHLCV window around the user's trade."""
+    if not stock_code or not buy_ymd:
+        return pd.DataFrame()
+    try:
+        import FinanceDataReader as fdr
+
+        buy_dt = datetime.date.fromisoformat(str(buy_ymd)[:10])
+        sell_dt = datetime.date.fromisoformat(str(sell_ymd)[:10]) if sell_ymd else datetime.date.today()
+        if sell_dt < buy_dt:
+            sell_dt = buy_dt
+        start = (buy_dt - datetime.timedelta(days=35)).strftime("%Y-%m-%d")
+        end = (sell_dt + datetime.timedelta(days=8)).strftime("%Y-%m-%d")
+        df = fdr.DataReader(stock_code, start, end)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df.reset_index().rename(columns={
+            "Date": "date",
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "volume",
+        })
+        wanted = [col for col in ["date", "open", "high", "low", "close", "volume", "Change"] if col in df.columns]
+        return df[wanted].copy()
+    except Exception:
+        return pd.DataFrame()
+
+
+def _row_on_or_before(df: pd.DataFrame, ymd: str) -> pd.Series | None:
+    if df is None or df.empty or "date" not in df.columns:
+        return None
+    try:
+        target = pd.Timestamp(str(ymd)[:10])
+        work = df.copy()
+        work["date"] = pd.to_datetime(work["date"], errors="coerce")
+        work = work.dropna(subset=["date"]).sort_values("date")
+        before = work[work["date"] <= target]
+        if before.empty:
+            return None
+        return before.iloc[-1]
+    except Exception:
+        return None
+
+
+def _trade_window_metrics(
+    price_window: pd.DataFrame,
+    buy_ymd: str,
+    buy_price: float | None,
+    sell_ymd: str | None = None,
+    sell_price: float | None = None,
+) -> dict:
+    metrics = {
+        "buy_close": None,
+        "buy_trade_date": "",
+        "latest_close": None,
+        "latest_date": "",
+        "prev_5d_return": None,
+        "post_return": None,
+        "volume_ratio": None,
+        "day_position_pct": None,
+        "sell_return": None,
+        "after_sell_return": None,
+        "holding_days": None,
+    }
+    if price_window is None or price_window.empty:
+        return metrics
+
+    work = price_window.copy()
+    work["date"] = pd.to_datetime(work["date"], errors="coerce")
+    work = work.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    buy_row = _row_on_or_before(work, buy_ymd)
+    if buy_row is None:
+        return metrics
+
+    buy_idx = int(work.index[work["date"] == buy_row["date"]][-1]) if (work["date"] == buy_row["date"]).any() else None
+    buy_close = _num(buy_row.get("close"))
+    metrics["buy_close"] = buy_close
+    metrics["buy_trade_date"] = _date_text(buy_row.get("date"))
+    if not work.empty:
+        latest = work.iloc[-1]
+        metrics["latest_close"] = _num(latest.get("close"))
+        metrics["latest_date"] = _date_text(latest.get("date"))
+
+    if buy_idx is not None and buy_idx >= 5:
+        prev_close = _num(work.iloc[buy_idx - 5].get("close"))
+        if prev_close and buy_close:
+            metrics["prev_5d_return"] = (buy_close / prev_close - 1) * 100
+
+    if buy_idx is not None and buy_idx >= 1:
+        prior = work.iloc[max(0, buy_idx - 5):buy_idx]
+        vol = _num(buy_row.get("volume"))
+        avg_vol = _num(prior.get("volume").mean()) if "volume" in prior else None
+        if vol and avg_vol:
+            metrics["volume_ratio"] = vol / avg_vol
+
+    high = _num(buy_row.get("high"))
+    low = _num(buy_row.get("low"))
+    if high and low and high > low and buy_price:
+        metrics["day_position_pct"] = max(0.0, min(100.0, (buy_price - low) / (high - low) * 100))
+
+    latest_close = _num(metrics.get("latest_close"))
+    if latest_close and buy_price:
+        metrics["post_return"] = (latest_close / buy_price - 1) * 100
+    if sell_price and buy_price:
+        metrics["sell_return"] = (sell_price / buy_price - 1) * 100
+    if sell_price and latest_close:
+        metrics["after_sell_return"] = (latest_close / sell_price - 1) * 100
+    try:
+        buy_dt = datetime.date.fromisoformat(str(buy_ymd)[:10])
+        end_dt = datetime.date.fromisoformat(str(sell_ymd)[:10]) if sell_ymd else datetime.date.today()
+        metrics["holding_days"] = max(0, (end_dt - buy_dt).days)
+    except Exception:
+        pass
+    return metrics
+
+
+def _flow_read(flow: dict | None) -> dict:
+    flow = flow or {}
+    foreign = _num(flow.get("foreign"))
+    institution = _num(flow.get("institution"))
+    smart_values = [v for v in (foreign, institution) if v is not None]
+    smart = sum(smart_values) if smart_values else None
+    parts = []
+    if foreign is not None:
+        parts.append(f"외국인 {_fmt_eok_value(foreign)}")
+    if institution is not None:
+        parts.append(f"기관 {_fmt_eok_value(institution)}")
+    return {
+        "foreign": foreign,
+        "institution": institution,
+        "smart": smart,
+        "summary": " · ".join(parts) if parts else "투자자별 수급 확인 제한",
+        "period": f"{flow.get('start', '')}~{flow.get('end', '')}".strip("~"),
+        "source": flow.get("source") or "KRX 투자자별 거래대금",
+    }
+
+
+def build_autopsy_data_audit(payload: dict, flow: dict) -> list[dict]:
+    """Describe exactly which data was used and where interpretation is limited."""
+    metrics = payload.get("metrics") or {}
+    context = payload.get("context") or {}
+    price_window = payload.get("price_window")
+    reasons = payload.get("buy_reasons") or []
+    horizon = str(payload.get("horizon") or "")
+    short_horizon = horizon in ("당일", "내일~3일", "1주 이내")
+    news_needed = any(reason in reasons for reason in ("뉴스/기사", "공시/실적", "커뮤니티/지인 추천"))
+    dart_needed = any(reason in reasons for reason in ("공시/실적", "증권사 리포트"))
+    kis_needed = short_horizon or "시간외 상승" in reasons
+
+    rows = []
+
+    def add(axis: str, status: str, used_for: str, source: str, limitation: str) -> None:
+        rows.append({
+            "데이터 축": axis,
+            "상태": status,
+            "판정에 쓴 위치": used_for,
+            "출처": source,
+            "한계": limitation,
+        })
+
+    has_price = price_window is not None and not price_window.empty
+    add(
+        "가격·거래량",
+        "사용" if has_price else "부족",
+        "매수 전 5거래일 수익률, 매수일 거래량, 당일 가격 위치",
+        "FinanceDataReader 일봉",
+        "현재는 일봉 기준입니다. 체결 시각 분봉·호가·시간외 체결은 KIS 읽기 연동 후 보강해야 합니다.",
+    )
+    add(
+        "체결 시각",
+        "부분" if payload.get("buy_time") else "부족",
+        "단기 판단의 시간대 맥락",
+        "사용자 입력",
+        "시간을 입력해도 아직 분봉 데이터와 자동 결합되지는 않습니다.",
+    )
+    add(
+        "KRX 수급",
+        "사용" if flow.get("smart") is not None else "부족",
+        "매수 이후 외국인·기관 방향",
+        flow.get("source") or "KRX 투자자별 거래대금",
+        "일자별 누적 수급입니다. 체결 직전·직후 실시간 수급은 KIS/거래소 실시간 데이터가 필요합니다.",
+    )
+    news_count = len(context.get("news") or [])
+    add(
+        "뉴스",
+        "사용" if news_count else ("필요" if news_needed else "참고 제외"),
+        "호재 선반영·추천성 정보 여부",
+        "외부 뉴스 검색",
+        "현재는 최근 뉴스 중심입니다. 체결 전후 최초 보도 시점 정밀 매칭은 추가 구현 대상입니다.",
+    )
+    disclosure_count = len(context.get("disclosures") or [])
+    add(
+        "DART 공시",
+        "사용" if disclosure_count else ("필요" if dart_needed else "참고 제외"),
+        "공시·실적·리포트 근거 검증",
+        "OpenDART",
+        "공시가 매수 전 정보였는지, 매수 후 정보였는지 시간순 매칭을 더 정교화해야 합니다.",
+    )
+    add(
+        "KIS 체결·분봉",
+        "필요" if kis_needed else "추가",
+        "체결 직전/직후 분봉, 시간외 거래량, 호가 두께",
+        "한국투자증권 Open API",
+        "아직 미연동입니다. 단기·시간외 진단은 그래서 확신도를 제한합니다.",
+    )
+    if metrics.get("prev_5d_return") is None:
+        add(
+            "가격 특징값",
+            "부족",
+            "매수 전 가격 선반영 여부",
+            "FinanceDataReader 일봉",
+            "매수일 전 충분한 거래일 데이터를 확보하지 못했습니다.",
+        )
+    return rows
+
+
+def build_autopsy_feature_rows(payload: dict, flow: dict) -> list[dict]:
+    """Expose the actual feature values behind the diagnosis."""
+    metrics = payload.get("metrics") or {}
+    context = payload.get("context") or {}
+    rows = []
+
+    def add(axis: str, value: str, read: str, impact: str, source: str) -> None:
+        rows.append({
+            "축": axis,
+            "값": value,
+            "해석": read,
+            "판정 영향": impact,
+            "출처": source,
+        })
+
+    prev_5d = _num(metrics.get("prev_5d_return"))
+    if prev_5d is None:
+        add("가격", "확인 제한", "매수 전 가격 선반영 여부를 충분히 계산하지 못했습니다.", "확신도 하향", "FinanceDataReader 일봉")
+    elif prev_5d >= 8:
+        add("가격", _fmt_pct(prev_5d), "매수 전 이미 주가가 많이 움직인 구간입니다.", "추격·선반영 가능성 상승", "FinanceDataReader 일봉")
+    elif prev_5d <= -8:
+        add("가격", _fmt_pct(prev_5d), "낙폭과대 관점은 일부 성립합니다.", "낙폭과대 진단 후보", "FinanceDataReader 일봉")
+    else:
+        add("가격", _fmt_pct(prev_5d), "매수 전 과열·급락 신호는 강하지 않습니다.", "중립", "FinanceDataReader 일봉")
+
+    volume_ratio = _num(metrics.get("volume_ratio"))
+    if volume_ratio is None:
+        add("거래량", "확인 제한", "매수일 거래량이 직전 평균 대비 어느 정도였는지 계산하지 못했습니다.", "확신도 하향", "FinanceDataReader 일봉")
+    elif volume_ratio >= 2:
+        add("거래량", f"{volume_ratio:.1f}배", "거래량이 이미 터진 구간입니다. 고점권이면 차익실현 물량을 의심해야 합니다.", "추격·선반영 가능성 상승", "FinanceDataReader 일봉")
+    elif volume_ratio <= 0.8:
+        add("거래량", f"{volume_ratio:.1f}배", "거래량이 약한 반등은 확정 신호로 쓰기 어렵습니다.", "반등 신뢰도 하향", "FinanceDataReader 일봉")
+    else:
+        add("거래량", f"{volume_ratio:.1f}배", "거래량 과열 신호는 제한적입니다.", "중립", "FinanceDataReader 일봉")
+
+    day_pos = _num(metrics.get("day_position_pct"))
+    if day_pos is not None:
+        if day_pos >= 70:
+            read = "당일 가격 범위 상단 근처에서 진입했습니다."
+            impact = "진입 위치 부담"
+        elif day_pos <= 30:
+            read = "당일 가격 범위 하단 근처에서 진입했습니다."
+            impact = "가격 위치 완충"
+        else:
+            read = "당일 가격 범위 중간권 진입입니다."
+            impact = "중립"
+        add("체결 위치", f"{day_pos:.0f}%", read, impact, "사용자 입력 + 일봉 고저가")
+    else:
+        add("체결 위치", "확인 제한", "매수가가 당일 고저점 안에서 어디였는지 계산하지 못했습니다.", "확신도 하향", "사용자 입력 + 일봉 고저가")
+
+    smart = _num(flow.get("smart"))
+    if smart is None:
+        add("수급", "확인 제한", "매수 이후 외국인·기관 합산 방향을 확인하지 못했습니다.", "확신도 하향", flow.get("source") or "KRX")
+    elif smart < 0:
+        add("수급", _fmt_eok_value(smart), "외국인·기관 합산 수급이 매도 쪽입니다.", "수급 이탈 가능성 상승", flow.get("source") or "KRX")
+    elif smart > 0:
+        add("수급", _fmt_eok_value(smart), "외국인·기관 합산 수급은 매수 쪽입니다.", "수급 역행 가능성 하향", flow.get("source") or "KRX")
+    else:
+        add("수급", _fmt_eok_value(smart), "외국인·기관 합산 수급은 중립에 가깝습니다.", "중립", flow.get("source") or "KRX")
+
+    post_return = _num(metrics.get("post_return"))
+    if post_return is not None:
+        add("결과", _fmt_pct(post_return), "매수 이후 현재 또는 최신 종가 기준 성과입니다.", "판단 품질 보조", "현재가/FDR")
+
+    news_count = len(context.get("news") or [])
+    disclosure_count = len(context.get("disclosures") or [])
+    add("뉴스", f"{news_count}건", "최근 뉴스 맥락을 참고했습니다." if news_count else "뉴스 맥락은 확인되지 않았습니다.", "재료 선반영 보조", "외부 뉴스 검색")
+    add("공시", f"{disclosure_count}건", "최근 DART 공시를 참고했습니다." if disclosure_count else "DART 공시는 확인되지 않았습니다.", "공시·실적 근거 보조", "OpenDART")
+    return rows
+
+
+def build_autopsy_data_quality(payload: dict, feature_rows: list[dict], audit_rows: list[dict]) -> dict:
+    reasons = payload.get("buy_reasons") or []
+    horizon = str(payload.get("horizon") or "")
+    metrics = payload.get("metrics") or {}
+    flow_status = next((row for row in audit_rows if row.get("데이터 축") == "KRX 수급"), {})
+    price_status = next((row for row in audit_rows if row.get("데이터 축") == "가격·거래량"), {})
+
+    score = 20
+    if price_status.get("상태") == "사용":
+        score += 25
+    if metrics.get("volume_ratio") is not None:
+        score += 12
+    if metrics.get("day_position_pct") is not None:
+        score += 10
+    if flow_status.get("상태") == "사용":
+        score += 18
+    if payload.get("buy_time"):
+        score += 5
+    if payload.get("memo"):
+        score += 5
+
+    critical = []
+    if horizon in ("당일", "내일~3일", "1주 이내"):
+        critical.append("단기 판단인데 체결 시각 기준 분봉·호가가 아직 없습니다.")
+    if "시간외 상승" in reasons:
+        critical.append("시간외 상승 근거를 검증하려면 시간외 거래량·호가 데이터가 필요합니다.")
+    if "공시/실적" in reasons and not any(row.get("데이터 축") == "DART 공시" and row.get("상태") == "사용" for row in audit_rows):
+        critical.append("공시·실적 근거를 선택했지만 DART 공시 매칭이 충분하지 않습니다.")
+    if "뉴스/기사" in reasons and not any(row.get("데이터 축") == "뉴스" and row.get("상태") == "사용" for row in audit_rows):
+        critical.append("뉴스 근거를 선택했지만 체결 전후 뉴스 매칭이 충분하지 않습니다.")
+
+    if critical:
+        score = min(score, 72)
+    band = "높음" if score >= 78 else "중간" if score >= 60 else "낮음"
+    return {
+        "score": round(max(0, min(100, score))),
+        "band": band,
+        "critical_missing": critical,
+        "confidence_cap": "중간" if critical else None,
+        "pattern_score_cap": 76 if critical else 100,
+        "read": (
+            "핵심 데이터가 비교적 연결됐습니다."
+            if score >= 78 else
+            "일봉·수급 중심 진단은 가능하지만, 체결 시각 정밀도는 아직 제한됩니다."
+            if score >= 60 else
+            "데이터가 부족해 원인 후보를 낮은 확신도로만 제시해야 합니다."
+        ),
+    }
+
+
+def _score_band(score: float) -> str:
+    if score >= 78:
+        return "높음"
+    if score >= 60:
+        return "중간"
+    return "낮음"
+
+
+def _add_unique(items: list[str], value: str) -> None:
+    clean = str(value or "").strip()
+    if clean and clean not in items:
+        items.append(clean)
+
+
+def build_trade_autopsy(payload: dict) -> dict:
+    """Rule-based trade diagnosis. It ranks likely patterns; it does not claim a single exact cause."""
+    metrics = payload.get("metrics") or {}
+    reasons = payload.get("buy_reasons") or []
+    horizon = str(payload.get("horizon") or "")
+    position_status = str(payload.get("position_status") or "")
+    leverage = str(payload.get("leverage") or "")
+    memo = str(payload.get("memo") or "")
+    capital_pressure = str(payload.get("capital_pressure") or "")
+    max_loss_pct = _num(payload.get("max_loss_pct"))
+    position_weight_pct = _num(payload.get("position_weight_pct"))
+    flow = _flow_read(payload.get("flow"))
+    context = payload.get("context") or {}
+    data_audit = build_autopsy_data_audit(payload, flow)
+    feature_rows = build_autopsy_feature_rows(payload, flow)
+    data_quality = build_autopsy_data_quality(payload, feature_rows, data_audit)
+
+    prev_5d = _num(metrics.get("prev_5d_return"))
+    volume_ratio = _num(metrics.get("volume_ratio"))
+    day_pos = _num(metrics.get("day_position_pct"))
+    post_return = _num(metrics.get("post_return"))
+    sell_return = _num(metrics.get("sell_return"))
+    after_sell_return = _num(metrics.get("after_sell_return"))
+    holding_days = metrics.get("holding_days")
+    smart_flow = _num(flow.get("smart"))
+
+    short_horizon = horizon in ("당일", "내일~3일", "1주 이내")
+    medium_horizon = horizon in ("1개월 이내", "중장기")
+    levered = leverage in ("미수 사용", "신용 사용", "미수/신용 둘 다")
+    low_capital_pressure = capital_pressure in ("", "여유자금")
+    low_weight = position_weight_pct is None or position_weight_pct <= 20
+    news_like = any(reason in reasons for reason in ("뉴스/기사", "공시/실적", "커뮤니티/지인 추천"))
+    report_like = "증권사 리포트" in reasons
+    after_hours = "시간외 상승" in reasons
+    surge_like = "급등 추격" in reasons
+    dip_like = "낙폭과대" in reasons
+    flow_like = "외국인·기관 수급" in reasons
+    no_reason = not reasons or "이유가 애매함" in reasons
+
+    favorable: list[str] = []
+    adverse: list[str] = []
+    missing: list[str] = []
+
+    within_loss_budget = (
+        post_return is not None and max_loss_pct is not None and post_return < 0 and abs(post_return) <= max_loss_pct
+    )
+    if post_return is not None and post_return >= 0:
+        _add_unique(favorable, f"현재 기준 매수가 대비 수익률은 {_fmt_pct(post_return)}로 손실 압박은 크지 않습니다.")
+    elif within_loss_budget and medium_horizon and low_capital_pressure and low_weight and not levered:
+        _add_unique(
+            favorable,
+            f"현재 손익 {_fmt_pct(post_return)}는 입력한 감당 가능 손실률 -{max_loss_pct:.1f}% 안쪽입니다. 이 경우 단기 변동과 근거 훼손을 분리해야 합니다.",
+        )
+    elif post_return is not None:
+        _add_unique(adverse, f"현재 기준 매수가 대비 수익률은 {_fmt_pct(post_return)}입니다. 진입 직후 방어 기준이 필요했던 거래입니다.")
+
+    if prev_5d is not None:
+        if prev_5d >= 8:
+            _add_unique(adverse, f"매수 전 5거래일 동안 주가가 {_fmt_pct(prev_5d)} 올라, 이미 기대가 가격에 반영됐을 가능성이 있습니다.")
+        elif prev_5d <= -8:
+            _add_unique(favorable, f"매수 전 5거래일 수익률이 {_fmt_pct(prev_5d)}라 낙폭과대 관점은 일부 성립합니다.")
+        else:
+            _add_unique(favorable, f"매수 전 5거래일 변동은 {_fmt_pct(prev_5d)}로 과열 단서는 강하지 않습니다.")
+    else:
+        _add_unique(missing, "매수 전 5거래일 가격 흐름을 충분히 복원하지 못했습니다.")
+
+    if volume_ratio is not None:
+        if volume_ratio >= 2.0:
+            _add_unique(adverse, f"매수 당일 거래량이 직전 평균의 {volume_ratio:.1f}배였습니다. 고점권 거래량이면 차익실현 물량을 먼저 의심했어야 합니다.")
+        elif volume_ratio <= 0.8:
+            _add_unique(adverse, f"매수 당일 거래량이 직전 평균의 {volume_ratio:.1f}배로 약했습니다. 반등 확신 근거로 쓰기엔 부족합니다.")
+        else:
+            _add_unique(favorable, f"거래량은 직전 평균의 {volume_ratio:.1f}배 수준으로 과열 신호는 제한적입니다.")
+    else:
+        _add_unique(missing, "분봉·시간외 거래량은 아직 연결되지 않았습니다. KIS 읽기 연동 시 가장 먼저 보강할 축입니다.")
+
+    if day_pos is not None:
+        if day_pos >= 70:
+            _add_unique(adverse, f"입력한 매수가가 당일 가격 범위의 상단 {day_pos:.0f}% 지점에 가까웠습니다.")
+        elif day_pos <= 30:
+            _add_unique(favorable, f"입력한 매수가는 당일 가격 범위의 하단 {day_pos:.0f}% 지점에 가까워 가격 위치 자체는 나쁘지 않았습니다.")
+
+    if smart_flow is not None:
+        if smart_flow < 0:
+            _add_unique(adverse, f"매수 이후 외국인·기관 합산 수급은 {_fmt_eok_value(smart_flow)}입니다. 가격 반등보다 수급 확인이 먼저였습니다.")
+        elif smart_flow > 0:
+            _add_unique(favorable, f"매수 이후 외국인·기관 합산 수급은 {_fmt_eok_value(smart_flow)}로 완전히 역행한 거래는 아닙니다.")
+    else:
+        _add_unique(missing, "매수 이후 외국인·기관 누적 수급을 확인하지 못했습니다.")
+
+    if levered:
+        _add_unique(adverse, f"{leverage} 상태라 판단 시간축이 짧습니다. 진입 전 손절·익절 기준이 먼저 있어야 했습니다.")
+    if capital_pressure == "곧 필요한 돈":
+        _add_unique(adverse, "곧 필요한 돈으로 들어간 판단입니다. 같은 변동성도 여유자금보다 훨씬 짧은 시간축으로 해석해야 합니다.")
+    if position_weight_pct is not None and position_weight_pct >= 35:
+        _add_unique(adverse, f"계좌 내 비중이 {position_weight_pct:.0f}%로 높습니다. 근거가 맞아도 단기 변동을 버티기 어려운 구조입니다.")
+    if report_like and short_horizon:
+        _add_unique(adverse, "단기 매매에서 증권사 리포트 목표가를 주된 근거로 쓰면 시간축이 맞지 않습니다.")
+    if no_reason:
+        _add_unique(adverse, "매수 이유가 애매합니다. 이 경우 결과보다 먼저 진입 기준이 기록되지 않은 것이 핵심 문제입니다.")
+    if memo and any(word in memo for word in ("좋대", "추천", "단톡", "유튜브", "텔레")):
+        _add_unique(adverse, "추천성 정보가 매수 이유에 섞여 있습니다. 다음에는 원출처와 가격 선반영 여부를 먼저 확인해야 합니다.")
+    for critical_item in data_quality.get("critical_missing") or []:
+        _add_unique(missing, critical_item)
+
+    labels: list[dict] = []
+
+    def add_label(
+        name: str,
+        score: float,
+        summary: str,
+        evidence: list[str],
+        counter: list[str],
+        flow_steps: list[str],
+        missed: list[str],
+        rules: list[str],
+    ) -> None:
+        labels.append({
+            "name": name,
+            "score": max(0, min(100, round(score, 1))),
+            "summary": summary,
+            "evidence": evidence[:4],
+            "counter": counter[:3],
+            "flow": flow_steps[:6],
+            "missed": missed[:5],
+            "rules": rules[:5],
+        })
+
+    if news_like and ((prev_5d or 0) >= 5 or (volume_ratio or 0) >= 1.8):
+        score = 58 + max(0, min(18, (prev_5d or 0))) + max(0, min(14, ((volume_ratio or 1) - 1) * 7))
+        add_label(
+            "호재 선반영 추격형",
+            score,
+            "뉴스나 공시가 좋아 보였지만, 매수 시점에는 이미 가격과 거래량이 먼저 반응했을 가능성이 큽니다.",
+            [
+                f"매수 전 5거래일 수익률 {_fmt_pct(prev_5d)}",
+                f"매수일 거래량 {volume_ratio:.1f}배" if volume_ratio else "매수일 거래량 확인 제한",
+                flow.get("summary", ""),
+            ],
+            favorable,
+            [
+                "먼저 그 뉴스가 처음 나온 정보인지 확인했어야 합니다.",
+                "뉴스 전 주가가 이미 얼마나 움직였는지 봤어야 합니다.",
+                "뉴스 직후 거래량이 터졌는데 고점을 못 넘겼다면 신규 진입보다 차익실현 물량을 의심했어야 합니다.",
+                "단기 매매라면 뉴스 내용보다 뉴스 직후 가격 반응과 수급이 더 중요합니다.",
+                "따라서 바로 진입하기보다 첫 반응 이후 눌림과 거래량 유지 여부를 확인하는 순서가 자연스럽습니다.",
+            ],
+            [
+                "뉴스가 새 정보인지, 이미 공시·전일 기사로 나온 내용인지 확인하지 못했습니다.",
+                "뉴스 전 상승률과 거래량 피크를 진입 전에 분리해서 보지 못했습니다.",
+            ],
+            [
+                "뉴스 보고 들어가기 전, 뉴스 전 3~5거래일 상승률부터 확인합니다.",
+                "거래량이 터졌는데 고점을 못 넘기면 추격하지 않습니다.",
+                "공시·뉴스는 가격 반응보다 늦게 보도될 수 있다는 전제를 둡니다.",
+            ],
+        )
+
+    if after_hours:
+        score = 66 + (10 if short_horizon else 0) + (8 if levered else 0)
+        add_label(
+            "시간외 착시형",
+            score,
+            "시간외 상승을 다음 정규장 확정 신호처럼 받아들였을 가능성이 있습니다.",
+            [
+                "매수 이유에 시간외 상승이 포함됐습니다.",
+                "단기 판단에서는 다음 정규장 초반 거래량 유지가 더 중요합니다." if short_horizon else "시간외는 참고 단서일 뿐 확정 신호가 아닙니다.",
+            ],
+            favorable,
+            [
+                "시간외 상승 이유가 공시인지, 뉴스인지, 단순 수급인지 먼저 나눴어야 합니다.",
+                "시간외 거래량이 충분했는지 확인했어야 합니다.",
+                "정규장 종가 위치가 약했는데 시간외만 오른 경우 착시 가능성을 먼저 봤어야 합니다.",
+                "다음날 시초가보다 9시 15분~30분 유지력이 더 중요합니다.",
+                "따라서 시간외에서 확정하지 말고 다음 정규장 초반 거래량과 평단 위 유지 여부를 봤어야 합니다.",
+            ],
+            [
+                "시간외 거래량과 호가 두께가 아직 연결되지 않았습니다.",
+                "정규장 약세를 시간외 반등 하나로 덮어버렸을 가능성이 있습니다.",
+            ],
+            [
+                "시간외 상승은 진입 근거가 아니라 다음날 확인할 후보 신호로 둡니다.",
+                "다음 정규장 초반 거래량이 붙지 않으면 시간외 상승을 확정 신호로 보지 않습니다.",
+            ],
+        )
+
+    if surge_like or (prev_5d is not None and prev_5d >= 10) or (day_pos is not None and day_pos >= 75):
+        score = 55 + max(0, min(20, (prev_5d or 0))) + (10 if day_pos and day_pos >= 75 else 0)
+        add_label(
+            "고점권 추격형",
+            score,
+            "가격이 이미 빠르게 움직인 뒤, 놓칠까 봐 따라 들어간 거래일 가능성이 있습니다.",
+            [
+                f"매수 전 5거래일 수익률 {_fmt_pct(prev_5d)}" if prev_5d is not None else "매수 전 상승률 확인 제한",
+                f"매수가의 당일 위치 {day_pos:.0f}%" if day_pos is not None else "당일 고저점 내 위치 확인 제한",
+            ],
+            favorable,
+            [
+                "먼저 이 상승이 첫 출발인지, 이미 2차·3차 반응인지 확인했어야 합니다.",
+                "고점권에서는 호재보다 거래량 피크와 가격 정체를 먼저 봐야 합니다.",
+                "당일 고점 부근 진입이면 손절 기준을 가격보다 먼저 정했어야 합니다.",
+                "추격이 필요했다면 전량이 아니라 작은 비중으로 확인하는 순서가 더 자연스럽습니다.",
+            ],
+            [
+                "가격이 얼마나 먼저 움직였는지 확인하기 전에 진입했을 가능성이 있습니다.",
+                "거래량 급증이 매수세인지 차익실현 물량인지 구분하지 못했습니다.",
+            ],
+            [
+                "5거래일 상승률이 큰 종목은 진입 전 '이미 늦었는지'부터 봅니다.",
+                "당일 고점권에서는 분할 접근 아니면 관찰로 넘깁니다.",
+            ],
+        )
+
+    if flow_like or (smart_flow is not None and smart_flow < 0):
+        score = 50 + (20 if smart_flow is not None and smart_flow < 0 else 0) + (8 if flow_like else 0)
+        add_label(
+            "수급 이탈 무시형",
+            score,
+            "가격만 보고 들어갔거나 버텼지만, 외국인·기관 흐름은 따라오지 않았을 가능성이 있습니다.",
+            [
+                flow.get("summary", ""),
+                f"매수 이후 수급 집계 기간 {flow.get('period')}" if flow.get("period") else "수급 집계 기간 확인 제한",
+            ],
+            favorable,
+            [
+                "가격 반등과 수급 반등을 분리해서 봤어야 합니다.",
+                "외국인·기관이 같이 비는 구간이면 단기 반등 신뢰도를 낮춰야 합니다.",
+                "수급이 근거였다면 매수 이후에도 그 근거가 유지되는지 매일 확인했어야 합니다.",
+                "수급이 끊긴 뒤에는 기존 매수 이유를 그대로 들고 가기 어렵습니다.",
+            ],
+            [
+                "가격은 봤지만 수급의 방향 전환을 체크하지 못했을 수 있습니다.",
+                "외국인·기관 합산과 세부 주체를 나눠 보지 못했습니다.",
+            ],
+            [
+                "수급을 근거로 샀다면, 외국인·기관 동반 순매수가 끊기는 날 근거 훼손으로 표시합니다.",
+                "가격 반등만 있고 수급이 비면 비중 확대 근거로 쓰지 않습니다.",
+            ],
+        )
+
+    if dip_like and (prev_5d is not None and prev_5d <= -6):
+        score = 58 + max(0, min(20, abs(prev_5d or 0))) + (8 if volume_ratio and volume_ratio < 1 else 0)
+        add_label(
+            "낙폭과대 오판형",
+            score,
+            "많이 빠졌다는 사실을 반등 근거로 해석했지만, 하락 원인과 회복 신호를 충분히 분리하지 못했을 수 있습니다.",
+            [
+                f"매수 전 5거래일 수익률 {_fmt_pct(prev_5d)}",
+                f"거래량 {volume_ratio:.1f}배" if volume_ratio else "거래량 확인 제한",
+            ],
+            favorable,
+            [
+                "먼저 급락 원인을 시장, 섹터, 종목 고유 이슈로 분리했어야 합니다.",
+                "싸졌다는 느낌보다 거래량과 수급이 실제로 돌아오는지 확인했어야 합니다.",
+                "저점 반등은 반등 시도이지 추세 회복이 아닙니다.",
+                "미수·신용이면 낙폭과대 매매일수록 비중과 시간 기준을 더 짧게 잡아야 합니다.",
+            ],
+            [
+                "하락 원인이 단순 조정인지 악재성 재평가인지 구분하지 못했습니다.",
+                "반등 단서와 추세 회복을 같은 신호로 봤을 수 있습니다.",
+            ],
+            [
+                "낙폭과대 진입 전 하락 원인을 세 갈래로 분류합니다.",
+                "반등 첫 봉보다 거래량 유지와 전일 저점 회복을 우선 확인합니다.",
+            ],
+        )
+
+    if report_like and short_horizon:
+        add_label(
+            "리포트 시간축 오용형",
+            72 + (8 if levered else 0),
+            "증권사 리포트의 중기 논리를 단기 매매 판단에 끌어왔을 가능성이 있습니다.",
+            [
+                f"투자기간 입력: {horizon}",
+                "매수 이유에 증권사 리포트가 포함됐습니다.",
+            ],
+            favorable,
+            [
+                "리포트 목표가는 보통 당일·내일 가격을 설명하는 자료가 아닙니다.",
+                "단기 매매라면 평단, 장 초반 거래량, 수급, 섹터 흐름을 먼저 봐야 합니다.",
+                "리포트는 계속 추적할 중기 논리가 남았는지 확인하는 보조 근거로 내려야 합니다.",
+                "따라서 목표가가 높다는 이유만으로 단기 손익 기준을 늦추면 안 됩니다.",
+            ],
+            [
+                "시간축이 다른 근거를 같은 판단 테이블에 올렸습니다.",
+                "목표가 여력을 단기 버티기 근거로 썼을 가능성이 있습니다.",
+            ],
+            [
+                "당일·내일 매매에는 리포트 목표가를 메인 근거로 쓰지 않습니다.",
+                "리포트는 중기 추적 여부, 단기 대응은 가격·수급으로 분리합니다.",
+            ],
+        )
+
+    if no_reason:
+        add_label(
+            "근거 공백형",
+            76 + (8 if levered else 0),
+            "틀린 판단보다 더 큰 문제는, 매수 당시 검증 가능한 기준이 기록되지 않았다는 점입니다.",
+            [
+                "매수 이유가 '이유가 애매함' 또는 미입력입니다.",
+                f"레버리지 상태: {leverage}" if levered else "구체적인 기준가와 무효화 조건이 보이지 않습니다.",
+            ],
+            favorable,
+            [
+                "먼저 이 거래가 뉴스, 수급, 차트, 실적 중 무엇을 근거로 한 것인지 한 문장으로 적었어야 합니다.",
+                "근거가 없다면 진입 가격보다 무효화 조건을 먼저 세웠어야 합니다.",
+                "기준이 없으면 결과가 좋아도 검증할 수 없고, 결과가 나쁘면 같은 실수를 반복합니다.",
+                "따라서 다음 거래는 매수 전 '왜 지금인지'와 '틀렸다는 신호'를 같이 적고 시작해야 합니다.",
+            ],
+            [
+                "매수 전 판단 기준이 기록되지 않았습니다.",
+                "사후에는 이유를 만들 수 있지만, 당시 기준인지 확인하기 어렵습니다.",
+            ],
+            [
+                "매수 버튼을 누르기 전 근거를 한 문장으로 남깁니다.",
+                "근거가 한 문장으로 안 써지면 거래하지 않습니다.",
+                "매수 근거와 손절 근거를 같은 화면에 적습니다.",
+            ],
+        )
+
+    if position_status == "매도 완료" and sell_return is not None and after_sell_return is not None and sell_return < 0 and after_sell_return >= 3:
+        add_label(
+            "공포 매도 후 반등형",
+            72 + min(15, after_sell_return),
+            "손실을 피하려고 정리했지만, 실제로는 지지선 훼손보다 공포가 먼저 작동했을 가능성이 있습니다.",
+            [
+                f"매도 수익률 {_fmt_pct(sell_return)}",
+                f"매도 후 가격 변화 {_fmt_pct(after_sell_return)}",
+            ],
+            favorable,
+            [
+                "가격이 빠졌다는 사실과 추세가 깨졌다는 사실을 구분했어야 합니다.",
+                "전일 저점, 주요 이평선, 장중 저점 이탈 여부를 확인했어야 합니다.",
+                "거래량 없이 빠지는 하락은 공포성 매도일 수 있습니다.",
+                "섹터 전체 조정인지 종목 고유 악재인지 나눠 봤어야 합니다.",
+                "조건들이 동시에 깨지지 않았다면 전량 매도보다 기준가 이탈 시 대응이 더 자연스럽습니다.",
+            ],
+            [
+                "지지선 훼손 여부보다 손실 감정이 먼저 판단을 밀었을 수 있습니다.",
+                "매도 후 반등 가능성을 확인할 조건이 없었습니다.",
+            ],
+            [
+                "매도 전 '가격 하락'과 '근거 훼손'을 구분합니다.",
+                "전량 매도는 지지선, 거래량, 수급이 동시에 깨질 때만 후보로 둡니다.",
+            ],
+        )
+
+    if not labels:
+        add_label(
+            "데이터 재구성 필요형",
+            52,
+            "현재 입력만으로는 특정 패턴을 강하게 단정하기 어렵습니다. 그래도 진입 기준과 확인해야 할 데이터는 분리할 수 있습니다.",
+            [
+                "강한 급등·급락·수급 이탈 신호는 제한적으로 확인됩니다.",
+                flow.get("summary", ""),
+            ],
+            favorable,
+            [
+                "먼저 이 거래의 기준 시간축을 정했어야 합니다.",
+                "그 다음 가격, 거래량, 수급, 공시·뉴스 중 어떤 근거가 실제로 있었는지 순서대로 확인했어야 합니다.",
+                "근거가 충분하지 않으면 예측보다 관찰 구간으로 두는 편이 자연스럽습니다.",
+            ],
+            [
+                "체결 시간, 분봉, 시간외 거래량이 없으면 단기 원인 분류 정확도가 낮아집니다.",
+                "매수 당시 봤던 자료가 기록되지 않아 사후 해석 비중이 커집니다.",
+            ],
+            [
+                "다음 거래부터 체결 시간과 매수 이유를 같이 기록합니다.",
+                "근거가 불충분하면 결론보다 확인 조건을 먼저 세웁니다.",
+            ],
+        )
+
+    labels = sorted(labels, key=lambda item: item["score"], reverse=True)
+    top = labels[0]
+    adverse_count = len(adverse) + len(top.get("missed", []))
+    favorable_count = len(favorable)
+    quality_score = max(22, min(92, 78 + favorable_count * 5 - adverse_count * 7 - (8 if levered else 0)))
+    if top["score"] >= 78:
+        confidence = "높음"
+    elif top["score"] >= 62:
+        confidence = "중간"
+    else:
+        confidence = "낮음"
+    if data_quality.get("confidence_cap") == "중간" and confidence == "높음":
+        confidence = "중간"
+    if data_quality.get("pattern_score_cap") is not None:
+        top["score"] = min(top["score"], data_quality["pattern_score_cap"])
+
+    disclosures = (context.get("disclosures") or [])[:5]
+    news = (context.get("news") or [])[:5]
+    if not disclosures and any(reason in reasons for reason in ("공시/실적", "증권사 리포트")):
+        _add_unique(missing, "공시·실적을 매수 근거로 썼다면 DART 원문 확인이 추가로 필요합니다.")
+    if not news and news_like:
+        _add_unique(missing, "매수 전후 뉴스 원문과 최초 보도 시점을 더 확인해야 합니다.")
+
+    result = {
+        **payload,
+        "top_label": top,
+        "labels": labels[:3],
+        "confidence": confidence,
+        "judgement_quality": {
+            "score": round(quality_score),
+            "band": _score_band(quality_score),
+            "read": (
+                "근거와 시간축이 비교적 맞았지만, 체결 시간 기준의 확인 조건을 더 남겨야 합니다."
+                if quality_score >= 78 else
+                "거래 근거 일부는 있었지만, 가격·거래량·수급의 우선순위가 충분히 정리되지 않았습니다."
+                if quality_score >= 60 else
+                "이번 거래는 진입 기준보다 감정·추격·사후 근거가 더 앞섰을 가능성이 큽니다."
+            ),
+        },
+        "favorable": favorable[:5],
+        "adverse": adverse[:6],
+        "missing": missing[:5],
+        "flow_read": flow,
+        "data_audit": data_audit,
+        "feature_rows": feature_rows,
+        "data_quality": data_quality,
+        "news_items": news,
+        "disclosure_items": disclosures,
+    }
+    result["insight_packet"] = build_insight_packet(result)
+    result["integrated_report"] = build_integrated_coaching_report(result)
+    result["detailed_flow"] = build_detailed_judgement_flow(result)
+    return result
+
+
+@st.cache_data(ttl=1800, show_spinner="거래 시점 데이터 재구성 중...")
+def load_trade_autopsy(
+    company_name: str,
+    stock_code_hint: str | None,
+    position_status: str,
+    buy_ymd: str,
+    buy_time: str,
+    buy_price: float,
+    quantity: int,
+    sell_ymd: str | None,
+    sell_time: str,
+    sell_price: float | None,
+    horizon: str,
+    buy_reasons: list[str],
+    leverage: str,
+    user_thesis: str,
+    source_material: str,
+    expected_target_price: float | None,
+    stop_loss_price: float | None,
+    position_weight_pct: float | None,
+    capital_pressure: str,
+    max_loss_pct: float | None,
+) -> dict:
+    info = None
+    try:
+        info = dc.resolve_company(company_name)
+    except Exception:
+        info = None
+    stock_code = stock_code_hint or (info or {}).get("stock_code") or ""
+    resolved_company = (info or {}).get("company") or company_name
+    current_price = None
+    if stock_code:
+        try:
+            current_price = dc.get_current_price(stock_code)
+        except Exception:
+            current_price = None
+    context = (
+        fetch_trade_context(resolved_company, stock_code)
+        if stock_code else
+        {"disclosures": [], "ownership": [], "news": [], "blogs": [], "market": {}, "external_drivers": {}, "errors": ["종목코드 미확인"]}
+    )
+    price_window = cached_trade_price_window(stock_code, buy_ymd, sell_ymd)
+    metrics = _trade_window_metrics(price_window, buy_ymd, buy_price, sell_ymd, sell_price)
+    if current_price and buy_price and metrics.get("post_return") is None:
+        metrics["latest_close"] = current_price
+        metrics["latest_date"] = datetime.date.today().strftime("%Y-%m-%d")
+        metrics["post_return"] = (current_price / buy_price - 1) * 100
+    flow = cached_investor_flow_since(stock_code, buy_ymd) if stock_code and buy_ymd else None
+    payload = {
+        "company": {"name": resolved_company, "code": stock_code, "current_price": current_price},
+        "position_status": position_status,
+        "buy_ymd": buy_ymd,
+        "buy_time": buy_time,
+        "buy_price": buy_price,
+        "quantity": quantity,
+        "sell_ymd": sell_ymd,
+        "sell_time": sell_time,
+        "sell_price": sell_price,
+        "horizon": horizon,
+        "buy_reasons": buy_reasons,
+        "leverage": leverage,
+        "memo": user_thesis,
+        "user_thesis": user_thesis,
+        "source_material": source_material,
+        "expected_target_price": expected_target_price,
+        "stop_loss_price": stop_loss_price,
+        "position_weight_pct": position_weight_pct,
+        "capital_pressure": capital_pressure,
+        "max_loss_pct": max_loss_pct,
+        "context": context,
+        "price_window": price_window,
+        "metrics": metrics,
+        "flow": flow,
+    }
+    return build_trade_autopsy(payload)
+
+
+def _autopsy_card(title: str, body: str, accent: str = "#173B57") -> str:
+    return (
+        f"<section style='border:1px solid #E2E8F0;border-top:3px solid {accent};"
+        "border-radius:8px;background:#FFFFFF;padding:13px 14px;min-height:118px'>"
+        f"<h4 style='margin:0 0 7px;color:#17202A;font-size:13px;font-weight:850'>{html.escape(title)}</h4>"
+        f"<p style='margin:0;color:#334155;font-size:12.8px;line-height:1.55'>{html.escape(body)}</p>"
+        "</section>"
+    )
+
+
+def render_trade_autopsy_sidebar() -> dict:
+    st.sidebar.markdown("### 왜 내가 사면 떨어질까?")
+    st.sidebar.caption(
+        "체결 시점 기준으로 가격·거래량·수급·공시·뉴스를 다시 붙여 이번 판단의 패턴과 다음번 규칙을 남깁니다."
+    )
+    st.sidebar.divider()
+
+    company_input = st.sidebar.text_input(
+        "종목명",
+        placeholder="예: DB하이텍, 삼성전자",
+        key="autopsy_company_input",
+    )
+    if st.sidebar.button("종목 확인", width="stretch", key="autopsy_search_button") and company_input:
+        st.session_state["autopsy_search_result"] = search_company_and_consensus(company_input)
+        st.session_state["autopsy_run"] = False
+
+    result = st.session_state.get("autopsy_search_result") or {}
+    stock_code = ""
+    company_name = company_input
+    if result and result.get("success"):
+        company_name = result.get("company_name") or company_input
+        stock_code = result.get("stock_code") or ""
+        st.sidebar.success(f"{company_name} · {stock_code}")
+    elif result:
+        st.sidebar.warning(result.get("message", "종목 확인이 필요합니다."))
+
+    st.sidebar.markdown("**체결 정보**")
+    position_status = st.sidebar.selectbox(
+        "현재 상태",
+        ["보유 중", "매도 완료"],
+        key="autopsy_position_status",
+    )
+    default_buy_date = datetime.date.today() - datetime.timedelta(days=7)
+    buy_date = st.sidebar.date_input("매수일", value=default_buy_date, key="autopsy_buy_date")
+    buy_time = st.sidebar.text_input("매수 시간", placeholder="예: 09:17", key="autopsy_buy_time")
+    buy_price = st.sidebar.number_input("매수가/평단가", min_value=0, value=0, step=100, key="autopsy_buy_price")
+    quantity = st.sidebar.number_input("수량", min_value=0, value=0, step=1, key="autopsy_quantity")
+
+    sell_date = None
+    sell_time = ""
+    sell_price = 0
+    if position_status == "매도 완료":
+        sell_date = st.sidebar.date_input("매도일", value=datetime.date.today(), key="autopsy_sell_date")
+        sell_time = st.sidebar.text_input("매도 시간", placeholder="예: 14:42", key="autopsy_sell_time")
+        sell_price = st.sidebar.number_input("매도가", min_value=0, value=0, step=100, key="autopsy_sell_price")
+
+    st.sidebar.markdown("**당시 근거와 시나리오**")
+    horizon = st.sidebar.selectbox(
+        "예상 보유기간",
+        ["당일", "내일~3일", "1주 이내", "1개월 이내", "중장기"],
+        index=1,
+        key="autopsy_horizon",
+    )
+    buy_reasons = st.sidebar.multiselect(
+        "근거로 활용한 자료 유형",
+        TRADE_REASON_OPTIONS,
+        default=[],
+        key="autopsy_buy_reasons",
+        help="뉴스, 리포트, 공시, 커뮤니티 글처럼 당시 판단에 영향을 준 자료 유형을 고릅니다.",
+    )
+    user_thesis = st.sidebar.text_area(
+        "당시 믿었던 주장",
+        placeholder="예: 시간외 반등이 나왔고 뉴스도 좋아서 내일 시초가 강할 것 같았다",
+        height=72,
+        key="autopsy_user_thesis",
+    )
+    source_material = st.sidebar.text_area(
+        "참고한 글·뉴스·리포트 붙여넣기",
+        placeholder="뉴스 제목, 리포트 문장, 커뮤니티 글, 목표가 주장 등을 그대로 붙여넣으세요",
+        height=110,
+        key="autopsy_source_material",
+    )
+    expected_target_price = st.sidebar.number_input(
+        "내가 생각한 목표가",
+        min_value=0,
+        value=0,
+        step=100,
+        key="autopsy_expected_target",
+    )
+    stop_loss_price = st.sidebar.number_input(
+        "무효화/손절 기준가",
+        min_value=0,
+        value=0,
+        step=100,
+        key="autopsy_stop_loss",
+    )
+    position_weight_pct = st.sidebar.number_input(
+        "계좌 내 비중 (%)",
+        min_value=0.0,
+        max_value=100.0,
+        value=0.0,
+        step=1.0,
+        key="autopsy_position_weight",
+    )
+    capital_pressure = st.sidebar.selectbox(
+        "자금 성격",
+        ["여유자금", "일부 필요자금", "곧 필요한 돈", "미입력"],
+        key="autopsy_capital_pressure",
+        help="같은 하락이라도 여유자금인지, 곧 필요한 돈인지에 따라 해석이 달라집니다.",
+    )
+    max_loss_pct = st.sidebar.number_input(
+        "감당 가능한 손실률 (%)",
+        min_value=0.0,
+        max_value=100.0,
+        value=0.0,
+        step=0.5,
+        key="autopsy_max_loss_pct",
+    )
+    leverage = st.sidebar.selectbox(
+        "미수/신용 여부",
+        ["없음", "미수 사용", "신용 사용", "미수/신용 둘 다"],
+        key="autopsy_leverage",
+    )
+
+    st.sidebar.caption("KIS 체결·분봉 연동 전까지는 수동 입력으로 진단합니다. KRX 수급과 DART/뉴스 맥락은 가능한 범위에서 자동 확인합니다.")
+    if st.sidebar.button("이번 거래 진단하기", type="primary", width="stretch", key="autopsy_submit"):
+        st.session_state["autopsy_run"] = True
+
+    ready = bool(st.session_state.get("autopsy_run")) and bool(company_name) and buy_price > 0
+    return {
+        "ready": ready,
+        "company_name": company_name,
+        "stock_code": stock_code,
+        "position_status": position_status,
+        "buy_ymd": _date_text(buy_date),
+        "buy_time": buy_time,
+        "buy_price": float(buy_price),
+        "quantity": int(quantity or 0),
+        "sell_ymd": _date_text(sell_date) if sell_date else None,
+        "sell_time": sell_time,
+        "sell_price": float(sell_price) if sell_price else None,
+        "horizon": horizon,
+        "buy_reasons": buy_reasons,
+        "leverage": leverage,
+        "user_thesis": user_thesis,
+        "source_material": source_material,
+        "expected_target_price": float(expected_target_price) if expected_target_price else None,
+        "stop_loss_price": float(stop_loss_price) if stop_loss_price else None,
+        "position_weight_pct": float(position_weight_pct) if position_weight_pct else None,
+        "capital_pressure": "" if capital_pressure == "미입력" else capital_pressure,
+        "max_loss_pct": float(max_loss_pct) if max_loss_pct else None,
+    }
+
+
+def render_trade_autopsy_intro() -> None:
+    render_product_header()
+    st.markdown(
+        """
+        <div style="margin:18px 0 10px;padding:32px 34px;border-radius:14px;
+                    background:#17202A;box-shadow:0 8px 24px rgba(16,24,40,0.16)">
+          <div style="display:inline-block;font-size:12px;font-weight:850;color:#C9D7E7;
+                      background:rgba(255,255,255,0.09);padding:5px 11px;border-radius:999px;margin-bottom:13px">
+            한국주식 매매 진단 코치
+          </div>
+          <div style="font-size:32px;font-weight:900;color:#FFFFFF;line-height:1.24;letter-spacing:0">
+            왜 내가 사면 떨어지고,<br>팔면 올라갈까?
+          </div>
+          <div style="font-size:14.5px;color:#D8E0EA;line-height:1.68;margin-top:14px;max-width:740px">
+            FinSight는 체결 시점을 기준으로 당시 가격 위치, 거래량, 외국인·기관 수급,
+            공시·뉴스·리포트 맥락을 다시 붙여 이번 판단이 어떤 패턴이었는지 진단합니다.
+            결과는 매수·매도 지시가 아니라, 다음 거래 전에 다시 볼 판단 순서입니다.
+          </div>
+          <div style="font-size:13px;color:#AEBBCC;margin-top:16px;font-weight:700">
+            왼쪽에 종목과 매수 정보를 넣으면 매매 진단서가 생성됩니다.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    cards = [
+        ("한 줄 진단", "이번 거래가 호재 선반영 추격형인지, 시간외 착시형인지, 수급 이탈 무시형인지 먼저 분류합니다.", "#C0392B"),
+        ("신호 종합 해석", "가격 위치, 거래량, 수급, 공시·뉴스를 따로 나열하지 않고 하나의 판단 흐름으로 다시 읽습니다.", "#185FA5"),
+        ("정석 판단 플로우", "같은 상황이었다면 어떤 순서로 봤어야 했는지, 실제 판단 흐름을 복원합니다.", "#0F6E56"),
+        ("다음번 규칙", "다음 거래에서 반복하지 않도록 확인 조건과 금지 규칙을 남깁니다.", "#BA7517"),
+    ]
+    st.markdown(
+        "<div style='display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:18px'>"
+        + "".join(_autopsy_card(title, body, color) for title, body, color in cards)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.info("증권사 리포트는 필수 입력이 아닙니다. 사용자가 리포트를 근거로 삼은 거래에서만 보조 근거로 내려와야 합니다.")
+
+
+def render_signal_list(title: str, items: list[str], empty: str, accent: str) -> None:
+    body = items or [empty]
+    lis = "".join(f"<li>{html.escape(str(item))}</li>" for item in body)
+    st.markdown(
+        f"""
+        <div class="fs-autopsy-list" style="border-top-color:{accent}">
+          <h4>{html.escape(title)}</h4>
+          <ul>{lis}</ul>
+        </div>
+        <style>
+        .fs-autopsy-list {{
+            background:#FFFFFF;
+            border:1px solid #E2E8F0;
+            border-top:3px solid;
+            border-radius:8px;
+            padding:13px 15px 12px;
+            min-height:176px;
+        }}
+        .fs-autopsy-list h4 {{
+            margin:0 0 8px;
+            color:#17202A;
+            font-size:14px;
+            font-weight:850;
+        }}
+        .fs-autopsy-list ul {{
+            margin:0;
+            padding-left:18px;
+            color:#334155;
+            font-size:12.8px;
+            line-height:1.62;
+        }}
+        .fs-autopsy-list li {{ margin-bottom:5px; }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_integrated_coaching_report(report: dict) -> None:
+    if not report:
+        return
+    trace = report.get("trace") or []
+    trace_html = "".join(
+        f"""
+        <div class="fs-coach-trace-row">
+          <div class="fs-coach-trace-title">{html.escape(str(item.get('title') or '판단 단계'))}</div>
+          <div class="fs-coach-trace-body">{html.escape(str(item.get('body') or ''))}</div>
+        </div>
+        """
+        for item in trace
+    )
+    st.markdown(
+        f"""
+        <div class="fs-coach-sheet">
+          <div class="fs-coach-kicker">통합 판단 재가공</div>
+          <div class="fs-coach-title">사용자가 믿은 주장부터 다시 추적했습니다.</div>
+          <p class="fs-coach-lead">{html.escape(str(report.get('assumed_claim') or ''))}</p>
+          {trace_html}
+          <div class="fs-coach-final">
+            <b>재가공 결론</b>
+            <span>{html.escape(str(report.get('final_read') or ''))}</span>
+          </div>
+          <div class="fs-coach-rule">
+            <b>다음에 같은 상황이면</b>
+            <span>{html.escape(str(report.get('corrected_thought') or ''))}</span>
+          </div>
+        </div>
+        <style>
+        .fs-coach-sheet {{
+            margin: 12px 0 18px;
+            padding: 18px 19px;
+            border: 1px solid #D8DEE6;
+            border-left: 5px solid #17202A;
+            border-radius: 9px;
+            background: #FFFFFF;
+        }}
+        .fs-coach-kicker {{
+            color: #C0392B;
+            font-size: 12px;
+            font-weight: 900;
+            margin-bottom: 4px;
+        }}
+        .fs-coach-title {{
+            color: #17202A;
+            font-size: 20px;
+            font-weight: 900;
+            line-height: 1.35;
+        }}
+        .fs-coach-lead {{
+            margin: 8px 0 13px;
+            color: #334155;
+            font-size: 13.5px;
+            line-height: 1.65;
+            font-weight: 750;
+        }}
+        .fs-coach-trace-row {{
+            padding: 12px 0;
+            border-top: 1px solid #E7ECF2;
+        }}
+        .fs-coach-trace-title {{
+            color: #17202A;
+            font-size: 14px;
+            font-weight: 900;
+            margin-bottom: 5px;
+        }}
+        .fs-coach-trace-body {{
+            color: #334155;
+            font-size: 13px;
+            line-height: 1.68;
+        }}
+        .fs-coach-final, .fs-coach-rule {{
+            margin-top: 12px;
+            padding: 12px 13px;
+            border-radius: 8px;
+            background: #F8FAFC;
+            border: 1px solid #E2E8F0;
+        }}
+        .fs-coach-final b, .fs-coach-rule b {{
+            display: block;
+            color: #17202A;
+            font-size: 13px;
+            margin-bottom: 5px;
+        }}
+        .fs-coach-final span, .fs-coach-rule span {{
+            color: #334155;
+            font-size: 13px;
+            line-height: 1.65;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_insight_packet_report(packet: dict) -> None:
+    """Render the reprocessed judgement packet as the main paid-report section."""
+    if not packet:
+        return
+    main = packet.get("main_read") or {}
+    claim = packet.get("claim") or {}
+    checks = packet.get("checks") or []
+    paragraphs = main.get("paragraphs") or []
+    rules = main.get("next_rules") or []
+
+    paragraph_html = "".join(
+        f"""
+        <section class="fs-insight-section">
+          <h4>{html.escape(str(item.get('title') or '재가공 단계'))}</h4>
+          <p>{html.escape(str(item.get('body') or ''))}</p>
+        </section>
+        """
+        for item in paragraphs
+    )
+
+    status_color = {
+        "support": "#0F6E56",
+        "caution": "#BA7517",
+        "contradict": "#B42318",
+        "missing": "#64748B",
+    }
+    checks_html = "".join(
+        f"""
+        <div class="fs-insight-check" style="border-left-color:{status_color.get(str(item.get('kind')), '#64748B')}">
+          <div class="fs-insight-check-head">
+            <span>{html.escape(str(item.get('title') or '검증 항목'))}</span>
+            <b style="color:{status_color.get(str(item.get('kind')), '#64748B')}">{html.escape(str(item.get('status') or '조건부'))}</b>
+          </div>
+          <p class="fs-insight-question">{html.escape(str(item.get('question') or ''))}</p>
+          <p class="fs-insight-coach"><strong>코치 코멘트</strong> {html.escape(str(item.get('coach_note') or ''))}</p>
+          <p><strong>실제로 확인한 것</strong> {html.escape(str(item.get('observed') or ''))}</p>
+          <p><strong>그래서 의미</strong> {html.escape(str(item.get('interpretation') or ''))}</p>
+          <p><strong>판단 변화</strong> {html.escape(str(item.get('effect') or ''))}</p>
+          <p class="fs-insight-rule"><strong>다음엔 이렇게</strong> {html.escape(str(item.get('next_rule') or ''))}</p>
+        </div>
+        """
+        for item in checks
+    )
+    rules_html = "".join(f"<li>{html.escape(str(rule))}</li>" for rule in rules)
+    keywords = ", ".join(str(item) for item in claim.get("keywords") or []) or "뚜렷한 키워드 없음"
+
+    st.markdown(
+        f"""
+        <div class="fs-insight-sheet">
+          <div class="fs-insight-kicker">판단 재가공 리포트</div>
+          <h3>사용자의 생각을 데이터로 다시 읽었습니다.</h3>
+          <p class="fs-insight-lead">{html.escape(str(main.get('lead') or ''))}</p>
+          <div class="fs-insight-thesis">
+            <b>입력 문장</b>
+            <span>{html.escape(str(claim.get('raw') or '당시 생각 미입력'))}</span>
+            <small>분류: {html.escape(str(claim.get('type') or '확인 제한'))} · 키워드: {html.escape(keywords)}</small>
+          </div>
+          <div class="fs-insight-one">{html.escape(str(main.get('one_sentence') or ''))}</div>
+          {paragraph_html}
+          <div class="fs-insight-checks">
+            <h4>검증 흐름</h4>
+            {checks_html}
+          </div>
+          <div class="fs-insight-next">
+            <h4>다음번 판단 규칙</h4>
+            <ul>{rules_html}</ul>
+          </div>
+        </div>
+        <style>
+        .fs-insight-sheet {{
+            margin: 12px 0 18px;
+            padding: 19px 20px 18px;
+            border: 1px solid #D8DEE6;
+            border-left: 5px solid #17202A;
+            border-radius: 9px;
+            background: #FFFFFF;
+        }}
+        .fs-insight-kicker {{
+            color: #B42318;
+            font-size: 12px;
+            font-weight: 900;
+            margin-bottom: 5px;
+        }}
+        .fs-insight-sheet h3 {{
+            margin: 0;
+            color: #17202A;
+            font-size: 22px;
+            line-height: 1.35;
+            font-weight: 900;
+        }}
+        .fs-insight-lead {{
+            margin: 8px 0 13px;
+            color: #334155;
+            font-size: 13.5px;
+            line-height: 1.7;
+            font-weight: 750;
+        }}
+        .fs-insight-thesis {{
+            padding: 13px 14px;
+            border: 1px solid #E2E8F0;
+            border-radius: 8px;
+            background: #F8FAFC;
+            margin-bottom: 12px;
+        }}
+        .fs-insight-thesis b {{
+            display: block;
+            color: #17202A;
+            font-size: 12.5px;
+            margin-bottom: 4px;
+        }}
+        .fs-insight-thesis span {{
+            display: block;
+            color: #1F2937;
+            font-size: 14px;
+            line-height: 1.62;
+            font-weight: 800;
+        }}
+        .fs-insight-thesis small {{
+            display: block;
+            margin-top: 6px;
+            color: #64748B;
+            font-size: 12px;
+            line-height: 1.5;
+        }}
+        .fs-insight-one {{
+            margin: 12px 0;
+            padding: 12px 13px;
+            border-radius: 8px;
+            background: #FFF7ED;
+            border: 1px solid #FED7AA;
+            color: #7C2D12;
+            font-size: 13.5px;
+            line-height: 1.65;
+            font-weight: 850;
+        }}
+        .fs-insight-section {{
+            padding: 11px 0;
+            border-top: 1px solid #E7ECF2;
+        }}
+        .fs-insight-section h4, .fs-insight-checks h4, .fs-insight-next h4 {{
+            margin: 0 0 6px;
+            color: #17202A;
+            font-size: 14px;
+            font-weight: 900;
+        }}
+        .fs-insight-section p {{
+            margin: 0;
+            color: #334155;
+            font-size: 13.2px;
+            line-height: 1.72;
+        }}
+        .fs-insight-checks {{
+            margin-top: 4px;
+            padding-top: 12px;
+            border-top: 1px solid #E7ECF2;
+        }}
+        .fs-insight-check {{
+            margin-top: 10px;
+            padding: 12px 13px;
+            border: 1px solid #E2E8F0;
+            border-left: 4px solid #64748B;
+            border-radius: 8px;
+            background: #FFFFFF;
+        }}
+        .fs-insight-check-head {{
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            color: #17202A;
+            font-size: 13.5px;
+            font-weight: 900;
+            line-height: 1.45;
+        }}
+        .fs-insight-check-head b {{
+            flex: 0 0 auto;
+            font-size: 12px;
+        }}
+        .fs-insight-check p {{
+            margin: 7px 0 0;
+            color: #334155;
+            font-size: 12.8px;
+            line-height: 1.65;
+        }}
+        .fs-insight-check p strong {{
+            color: #17202A;
+            font-weight: 900;
+            margin-right: 4px;
+        }}
+        .fs-insight-question {{
+            color: #475569 !important;
+            font-weight: 800;
+        }}
+        .fs-insight-coach {{
+            padding: 9px 10px;
+            border-radius: 7px;
+            background: #FFF7ED;
+            border: 1px solid #FED7AA;
+            color: #7C2D12 !important;
+            font-weight: 800;
+        }}
+        .fs-insight-coach strong {{
+            color: #9A3412 !important;
+        }}
+        .fs-insight-rule {{
+            padding-top: 7px;
+            border-top: 1px dashed #CBD5E1;
+        }}
+        .fs-insight-next {{
+            margin-top: 13px;
+            padding: 12px 13px;
+            border-radius: 8px;
+            background: #F8FAFC;
+            border: 1px solid #E2E8F0;
+        }}
+        .fs-insight-next ul {{
+            margin: 0;
+            padding-left: 18px;
+        }}
+        .fs-insight-next li {{
+            color: #334155;
+            font-size: 13px;
+            line-height: 1.65;
+            margin: 4px 0;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _sentence_join(items: list[str], fallback: str, limit: int = 4) -> str:
+    cleaned = [str(item).strip() for item in (items or []) if str(item).strip()]
+    if not cleaned:
+        return fallback
+    return " ".join(cleaned[:limit])
+
+
+def build_plain_language_signal_read(result: dict) -> dict:
+    metrics = result.get("metrics") or {}
+    flow = result.get("flow_read") or {}
+    top = result.get("top_label") or {}
+    thesis = str(result.get("user_thesis") or "").strip()
+    horizon = str(result.get("horizon") or "")
+    leverage = str(result.get("leverage") or "")
+    capital_pressure = str(result.get("capital_pressure") or "")
+    weight = _num(result.get("position_weight_pct"))
+    max_loss = _num(result.get("max_loss_pct"))
+    post_return = _num(metrics.get("post_return"))
+    prev_5d = _num(metrics.get("prev_5d_return"))
+    volume_ratio = _num(metrics.get("volume_ratio"))
+    day_pos = _num(metrics.get("day_position_pct"))
+    smart_flow = _num(flow.get("smart"))
+    claim_text = thesis or "명확한 주장을 입력하지 않았습니다."
+
+    if any(word in thesis for word in ("모르겠", "이슈", "애매", "불확실", "단기")):
+        opening = (
+            f"사용자가 적은 '{claim_text}'라는 말은 사실 꽤 중요한 단서입니다. "
+            "이 문장은 확신이 아니라 불확실성을 이미 느꼈다는 뜻에 가깝습니다. "
+            "그래서 이 판단은 '맞다/틀리다'보다 먼저, 포지션을 크게 가져가도 되는 상황이었는지부터 봐야 합니다."
+        )
+    elif thesis:
+        opening = (
+            f"사용자가 붙잡은 핵심 문장은 '{claim_text}'입니다. "
+            "이 문장은 그대로 결론이 아니라 가설입니다. 서비스는 이 가설이 가격, 거래량, 수급, 공시 흐름에서 버틸 수 있는지를 다시 확인했습니다."
+        )
+    else:
+        opening = (
+            "입력된 주장 문장이 없어서, 이번 해석은 체결 정보와 선택한 근거 유형을 기준으로 복원했습니다. "
+            "다음부터는 당시 본 뉴스 문장이나 커뮤니티 글을 붙이면 훨씬 더 개인화된 진단이 가능합니다."
+        )
+
+    price_parts = []
+    if prev_5d is not None:
+        if prev_5d >= 8:
+            price_parts.append("매수 전에 이미 가격이 꽤 움직여 있어서, 좋은 이슈를 보고 들어갔다기보다 이미 반응한 뒤에 따라간 그림이 섞여 있습니다")
+        elif prev_5d <= -8:
+            price_parts.append("매수 전에는 가격이 많이 빠져 있어, 싸 보인다는 느낌 자체는 이해되는 구간입니다")
+        else:
+            price_parts.append("매수 전 가격 흐름만 보면 과열이나 급락 한쪽으로 강하게 기울지는 않았습니다")
+    else:
+        price_parts.append("매수 전 가격 흐름은 충분히 복원되지 않았습니다")
+
+    if day_pos is not None:
+        if day_pos >= 70:
+            price_parts.append("다만 매수가가 그날 가격 범위의 위쪽에 가까워, 체감상 좋은 뉴스라도 진입 위치는 부담스러웠습니다")
+        elif day_pos <= 30:
+            price_parts.append("매수가 위치는 그날 범위의 아래쪽이라, 적어도 고점 추격이라고 단정할 위치는 아닙니다")
+
+    volume_parts = []
+    if volume_ratio is not None:
+        if volume_ratio >= 2:
+            volume_parts.append("거래량은 이미 크게 붙었습니다. 이건 관심이 몰린 신호이기도 하지만, 먼저 들어온 사람이 파는 구간일 수도 있습니다")
+        elif volume_ratio <= 0.8:
+            volume_parts.append("거래량이 약해서, 반등 기대를 확정 신호로 보기엔 아직 부족했습니다")
+        else:
+            volume_parts.append("거래량은 중간 수준이라, 거래량 하나로 강한 결론을 내리긴 어렵습니다")
+    else:
+        volume_parts.append("거래량 정보가 부족해서 단기 반응 강도는 보수적으로 봤습니다")
+
+    if smart_flow is not None:
+        if smart_flow < 0:
+            volume_parts.append("외국인·기관 수급은 받쳐주는 쪽이 아니라 빠지는 쪽이라, 사용자의 기대를 강화해주지는 못했습니다")
+        elif smart_flow > 0:
+            volume_parts.append("외국인·기관 수급은 들어오는 쪽이라, 적어도 수급 때문에 바로 틀렸다고 볼 상황은 아닙니다")
+        else:
+            volume_parts.append("외국인·기관 수급은 중립에 가까웠습니다")
+    else:
+        volume_parts.append("외국인·기관 수급이 충분히 확인되지 않아, 수급 근거는 낮은 확신도로만 반영했습니다")
+
+    pressure_parts = []
+    if post_return is not None and post_return < 0:
+        if max_loss and abs(post_return) <= max_loss and capital_pressure in ("", "여유자금") and leverage == "없음":
+            pressure_parts.append(
+                f"현재 손익 {_fmt_pct(post_return)}는 입력한 감당 가능 손실 범위 안입니다. 이 경우 손실이 났다는 사실보다, 처음 세운 근거가 깨졌는지가 더 중요합니다"
+            )
+        else:
+            pressure_parts.append(
+                f"현재 손익은 {_fmt_pct(post_return)}입니다. 이 하락을 버틸 수 있는지는 종목보다 자금 성격과 비중의 문제도 큽니다"
+            )
+    elif post_return is not None:
+        pressure_parts.append(f"현재 손익은 {_fmt_pct(post_return)}라 손익 자체가 판단을 압박하는 구간은 아닙니다")
+
+    if leverage != "없음":
+        pressure_parts.append(f"{leverage} 상태라면 같은 변동도 훨씬 짧게 봐야 합니다")
+    if weight and weight >= 35:
+        pressure_parts.append(f"계좌 비중이 {weight:.0f}%라서, 근거가 맞아도 흔들림을 크게 느낄 수밖에 없습니다")
+    if capital_pressure == "곧 필요한 돈":
+        pressure_parts.append("곧 필요한 돈이라면 중기 논리가 있어도 단기 방어 기준이 먼저입니다")
+    if horizon:
+        pressure_parts.append(f"입력한 투자기간은 {horizon}입니다. 이 기간과 맞지 않는 근거는 메인 판단 근거로 쓰면 안 됩니다")
+
+    conclusion = (
+        f"그래서 이번 판단은 '{top.get('name', '진단 제한')}'로 읽었지만, 핵심은 라벨이 아닙니다. "
+        "핵심은 사용자가 이미 느낀 불확실성, 실제 가격 위치, 거래량과 수급, 자금 압박을 한 번에 보면 "
+        "이 판단이 '강하게 밀어붙일 자리'였는지 '조건을 더 확인할 자리'였는지가 갈린다는 점입니다."
+    )
+
+    return {
+        "opening": opening,
+        "market_read": " ".join(price_parts + volume_parts),
+        "position_read": " ".join(pressure_parts) or "자금 성격과 비중 정보가 부족해, 포지션 압박은 제한적으로만 해석했습니다.",
+        "conclusion": conclusion,
+    }
+
+
+def render_narrative_evidence_report(result: dict) -> None:
+    """Render evidence as a readable report section, not as separate tables."""
+    top = result.get("top_label") or {}
+    adverse = result.get("adverse") or []
+    missing = result.get("missing") or []
+    missed = top.get("missed") or []
+    rules = top.get("rules") or []
+    confidence = result.get("confidence") or "확인 필요"
+    data_quality = result.get("data_quality") or {}
+    plain_read = build_plain_language_signal_read(result)
+
+    classification = (
+        f"이번 판단은 '{top.get('name', '진단 제한')}' 쪽으로 분류했습니다. "
+        f"다만 확신도는 {confidence}이고, 데이터 완성도는 {data_quality.get('score', 0)}/100입니다. "
+        "즉, 이건 정답 선언이 아니라 지금 연결된 자료로 볼 때 가장 조심스럽게 읽을 수 있는 결론입니다."
+    )
+    missing_read = (
+        "아직 비어 있는 부분은 이렇게 읽어야 합니다. "
+        + _sentence_join(missing, "큰 데이터 공백은 제한적입니다.")
+        + " 이 부분이 채워지기 전까지는 확신을 키우기보다 조건부 판단으로 남기는 편이 맞습니다."
+    )
+    rule_read = (
+        "다음번에는 "
+        + _sentence_join(rules, "매수 전 근거와 무효화 조건을 먼저 적어야 합니다.")
+        + " 특히 놓친 체크포인트는 "
+        + _sentence_join(missed, "체결 시각과 근거 원문 기록입니다.")
+    )
+
+    st.markdown(
+        f"""
+        <div class="fs-narrative-sheet">
+          <div class="fs-narrative-kicker">신호 종합 해석</div>
+          <div class="fs-narrative-title">쉽게 말하면, 이번 판단은 이렇게 읽힙니다.</div>
+          <section>
+            <h4>내가 적은 말에서 먼저 봐야 할 부분</h4>
+            <p>{html.escape(plain_read['opening'])}</p>
+          </section>
+          <section>
+            <h4>시장 반응을 사람 말로 풀면</h4>
+            <p>{html.escape(plain_read['market_read'])}</p>
+          </section>
+          <section>
+            <h4>내 포지션에 대입하면</h4>
+            <p>{html.escape(plain_read['position_read'])}</p>
+          </section>
+          <section>
+            <h4>분류한 이유</h4>
+            <p>{html.escape(classification)} {html.escape(plain_read['conclusion'])}</p>
+          </section>
+          <section>
+            <h4>아직 조심해야 할 부분</h4>
+            <p>{html.escape(missing_read)}</p>
+          </section>
+          <section>
+            <h4>다음 판단 기준</h4>
+            <p>{html.escape(rule_read)}</p>
+          </section>
+        </div>
+        <style>
+        .fs-narrative-sheet {{
+            margin: 12px 0 18px;
+            padding: 17px 18px 15px;
+            border: 1px solid #DCE3EA;
+            border-left: 5px solid #185FA5;
+            border-radius: 9px;
+            background: #FFFFFF;
+        }}
+        .fs-narrative-kicker {{
+            color: #185FA5;
+            font-size: 12px;
+            font-weight: 900;
+            margin-bottom: 4px;
+        }}
+        .fs-narrative-title {{
+            color: #17202A;
+            font-size: 18px;
+            font-weight: 900;
+            line-height: 1.35;
+            margin-bottom: 10px;
+        }}
+        .fs-narrative-sheet section {{
+            padding: 10px 0;
+            border-top: 1px solid #E7ECF2;
+        }}
+        .fs-narrative-sheet h4 {{
+            margin: 0 0 5px;
+            color: #17202A;
+            font-size: 13.5px;
+            font-weight: 900;
+        }}
+        .fs-narrative-sheet p {{
+            margin: 0;
+            color: #334155;
+            font-size: 13px;
+            line-height: 1.72;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_trade_autopsy_result(result: dict) -> None:
+    render_product_header()
+    company = result.get("company") or {}
+    top = result.get("top_label") or {}
+    quality = result.get("judgement_quality") or {}
+    metrics = result.get("metrics") or {}
+    flow = result.get("flow_read") or {}
+    buy_reasons = result.get("buy_reasons") or []
+    data_quality = result.get("data_quality") or {}
+
+    st.markdown(
+        f"""
+        <div style="padding:15px 17px;border:1px solid #E2E8F0;border-radius:10px;background:#FFFFFF;margin:8px 0 12px">
+          <div style="font-size:12px;color:#64748B;font-weight:850;margin-bottom:4px">이번 거래 진단서</div>
+          <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 14px">
+            <span style="font-size:22px;font-weight:900;color:#17202A">{html.escape(company.get('name') or '')}</span>
+            <span style="font-size:13px;color:#667085">{html.escape(company.get('code') or '종목코드 확인 제한')}</span>
+            <span style="font-size:13px;color:#667085">매수 {html.escape(result.get('buy_ymd') or '')} {html.escape(result.get('buy_time') or '')}</span>
+            <span style="font-size:13px;color:#667085">평단 {_fmt_won(result.get('buy_price'))}</span>
+            <span style="font-size:13px;color:#667085">근거 {html.escape(', '.join(buy_reasons) if buy_reasons else '미입력')}</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    h1, h2 = st.columns([1.35, 1.0])
+    with h1:
+        st.markdown(
+            f"""
+            <div style="border:1px solid #D7DEE8;border-left:5px solid #C0392B;border-radius:9px;background:#FFFFFF;padding:17px 18px">
+              <div style="font-size:12px;font-weight:850;color:#C0392B;margin-bottom:5px">한 줄 진단</div>
+              <div style="font-size:24px;font-weight:900;color:#17202A;line-height:1.3">{html.escape(top.get('name') or '진단 제한')}</div>
+              <p style="font-size:14px;color:#334155;line-height:1.62;margin:10px 0 0">{html.escape(top.get('summary') or '')}</p>
+              <div style="font-size:12px;color:#667085;margin-top:10px">진단 확신도 {html.escape(result.get('confidence') or '확인 필요')} · 패턴 점수 {top.get('score', 0):.0f}/100</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with h2:
+        st.markdown(
+            f"""
+            <div style="border:1px solid #D7DEE8;border-left:5px solid #173B57;border-radius:9px;background:#FFFFFF;padding:17px 18px;min-height:177px">
+              <div style="font-size:12px;font-weight:850;color:#173B57;margin-bottom:5px">판단 품질 평가</div>
+              <div style="font-size:34px;font-weight:900;color:#17202A;line-height:1">{quality.get('score', 0)}<span style="font-size:15px;color:#94A3B8"> /100</span></div>
+              <div style="display:inline-block;margin-top:8px;padding:3px 10px;border-radius:999px;background:#EAF2FB;color:#185FA5;font-size:12px;font-weight:850">{html.escape(quality.get('band') or '')}</div>
+              <p style="font-size:13px;color:#334155;line-height:1.58;margin:10px 0 0">{html.escape(quality.get('read') or '')}</p>
+              <div style="font-size:12px;color:#667085;margin-top:8px">데이터 완성도 {data_quality.get('score', 0)}/100 · {html.escape(data_quality.get('band') or '확인 필요')}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("매수 후 수익률", _fmt_pct(metrics.get("post_return")))
+    with c2:
+        st.metric("매수 전 5거래일", _fmt_pct(metrics.get("prev_5d_return")))
+    with c3:
+        volume_ratio = metrics.get("volume_ratio")
+        st.metric("매수일 거래량", f"{volume_ratio:.1f}배" if volume_ratio else "확인 제한")
+    st.caption(
+        f"KRX 수급: {flow.get('summary', '확인 제한')}"
+        + (f" · 기간 {flow.get('period')}" if flow.get("period") else "")
+        + " · 단기 체결·분봉은 KIS 읽기 연동 시 보강됩니다."
+    )
+
+    render_insight_packet_report(result.get("insight_packet") or {})
+    with st.expander("문장형 보조 해석 보기", expanded=False):
+        render_integrated_coaching_report(result.get("integrated_report") or {})
+        render_narrative_evidence_report(result)
+
+    feature_rows = result.get("feature_rows") or []
+    if feature_rows:
+        with st.expander("진단에 사용한 원자료 표로 보기", expanded=False):
+            st.dataframe(pd.DataFrame(feature_rows), hide_index=True, width="stretch")
+            if data_quality.get("critical_missing"):
+                st.warning(" / ".join(data_quality.get("critical_missing") or []))
+            st.caption(data_quality.get("read") or "데이터 완성도를 확인했습니다.")
+
+    st.markdown("#### 정석 판단 플로우")
+    detailed_flow = result.get("detailed_flow") or {}
+    flow_steps = detailed_flow.get("steps") or [
+        {"title": f"{idx}. 판단 순서", "body": step, "check": ""}
+        for idx, step in enumerate(top.get("flow") or [], start=1)
+    ]
+    flow_html = "".join(
+        f"<div class='fs-flow-row'>"
+        f"<div class='fs-flow-step-title'>{html.escape(str(item.get('title') or '판단 순서'))}</div>"
+        f"<div class='fs-flow-step-body'>{html.escape(str(item.get('body') or ''))}</div>"
+        f"<div class='fs-flow-step-check'>{html.escape(str(item.get('check') or ''))}</div>"
+        f"</div>"
+        for item in flow_steps
+    )
+    st.markdown(
+        f"""
+        <div class="fs-flow-sheet">
+          <div class="fs-flow-kicker">그때 이렇게 봤어야 합니다</div>
+          <div class="fs-flow-title">같은 상황이었다면 어떤 순서로 판단했어야 했는지 복원합니다.</div>
+          <p class="fs-flow-intro">{html.escape(str(detailed_flow.get('intro') or ''))}</p>
+          {flow_html}
+          <p class="fs-flow-closing">{html.escape(str(detailed_flow.get('closing') or ''))}</p>
+        </div>
+        <style>
+        .fs-flow-sheet {{
+            margin:8px 0 16px;
+            padding:17px 18px;
+            border:1px solid #DDE7E1;
+            border-left:5px solid #0F6E56;
+            border-radius:9px;
+            background:#FFFFFF;
+        }}
+        .fs-flow-kicker {{
+            color:#0F6E56;
+            font-size:12px;
+            font-weight:900;
+            margin-bottom:4px;
+        }}
+        .fs-flow-title {{
+            color:#17202A;
+            font-size:16px;
+            font-weight:850;
+            margin-bottom:12px;
+        }}
+        .fs-flow-intro, .fs-flow-closing {{
+            margin:0 0 12px;
+            color:#334155;
+            font-size:13.5px;
+            line-height:1.68;
+        }}
+        .fs-flow-closing {{
+            margin:13px 0 0;
+            padding-top:12px;
+            border-top:1px solid #E5EAF0;
+            font-weight:700;
+        }}
+        .fs-flow-row {{
+            padding:12px 0;
+            border-top:1px solid #EDF2F4;
+        }}
+        .fs-flow-step-title {{
+            color:#17202A;
+            font-size:14px;
+            font-weight:900;
+            margin-bottom:5px;
+        }}
+        .fs-flow-step-body {{
+            color:#334155;
+            font-size:13.2px;
+            line-height:1.68;
+        }}
+        .fs-flow-step-check {{
+            margin-top:6px;
+            color:#667085;
+            font-size:12.2px;
+            line-height:1.5;
+            font-weight:750;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("놓친 체크포인트와 대응 규칙 원문", expanded=False):
+        r1, r2 = st.columns(2)
+        with r1:
+            render_signal_list("내가 놓친 체크포인트", top.get("missed") or [], "체크포인트를 더 모아야 합니다.", "#BA7517")
+        with r2:
+            render_signal_list("다음번 대응 규칙", top.get("rules") or [], "다음 규칙을 만들려면 체결 시간과 매수 이유를 더 구체화해야 합니다.", "#0F6E56")
+
+    labels = result.get("labels") or []
+    if len(labels) > 1:
+        st.markdown("#### 다른 가능성")
+        rows = [
+            {
+                "패턴": item.get("name"),
+                "가능성": f"{item.get('score', 0):.0f}/100",
+                "해석": item.get("summary"),
+            }
+            for item in labels[1:]
+        ]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    chart_df = result.get("price_window")
+    if chart_df is not None and not chart_df.empty and {"date", "close"}.issubset(chart_df.columns):
+        with st.expander("가격 흐름 보기", expanded=False):
+            view = chart_df[["date", "close"]].copy()
+            view["date"] = pd.to_datetime(view["date"], errors="coerce")
+            view = view.dropna(subset=["date"]).set_index("date")
+            st.line_chart(view["close"])
+            st.caption("현재 MVP는 일봉 기준입니다. KIS 읽기 연동 후 체결 시각 기준 분봉·호가·시간외 흐름까지 보강할 수 있습니다.")
+
+    news_items = result.get("news_items") or []
+    disclosure_items = result.get("disclosure_items") or []
+    with st.expander("뉴스·공시 참고 자료", expanded=False):
+        if news_items:
+            st.markdown("**뉴스**")
+            for item in news_items[:5]:
+                title = item.get("title") or item.get("summary") or "제목 확인 제한"
+                url = item.get("url") or item.get("link")
+                if url:
+                    st.markdown(f"- [{title}]({url})")
+                else:
+                    st.markdown(f"- {title}")
+        if disclosure_items:
+            st.markdown("**DART 공시**")
+            for item in disclosure_items[:5]:
+                title = item.get("title") or item.get("report_nm") or item.get("detail") or "공시명 확인 제한"
+                url = item.get("url")
+                if url:
+                    st.markdown(f"- [{title}]({url})")
+                else:
+                    st.markdown(f"- {title}")
+        if not news_items and not disclosure_items:
+            st.caption("뉴스·공시 자료를 확인하지 못했습니다.")
+
+    audit_rows = result.get("data_audit") or []
+    if audit_rows:
+        with st.expander("데이터 사용 감사표", expanded=False):
+            st.dataframe(pd.DataFrame(audit_rows), hide_index=True, width="stretch")
+            st.caption("상태가 '필요' 또는 '부족'인 축은 최종 진단에서 확신도를 낮추는 방향으로 반영합니다.")
+
+    st.caption(
+        "이 결과는 투자 권유가 아니라 체결 시점 진단입니다. 원인 후보는 가격·거래량·수급·공시 데이터로 추정한 가능성이며, "
+        "체결 시각 분봉과 실제 계좌 체결내역이 연결되면 정확도가 올라갑니다."
+    )
 
 
 # ──────────────────────────────────────────────
 # 사이드바 — 자동 검색 / 직접 입력
 # ──────────────────────────────────────────────
+if "finsight_service_mode" not in st.session_state:
+    st.session_state["finsight_service_mode"] = "매매 진단서"
+
+st.sidebar.markdown("### 기능 선택")
+mode_col1, mode_col2 = st.sidebar.columns(2)
+with mode_col1:
+    if st.button(
+        "매매 진단서",
+        key="mode_trade_autopsy",
+        type="primary" if st.session_state["finsight_service_mode"] == "매매 진단서" else "secondary",
+        width="stretch",
+    ):
+        st.session_state["finsight_service_mode"] = "매매 진단서"
+        st.rerun()
+with mode_col2:
+    if st.button(
+        "리포트 검증",
+        key="mode_report_validator",
+        type="primary" if st.session_state["finsight_service_mode"] == "리포트 검증" else "secondary",
+        width="stretch",
+    ):
+        st.session_state["finsight_service_mode"] = "리포트 검증"
+        st.rerun()
+analysis_mode = st.session_state["finsight_service_mode"]
+st.sidebar.caption("기존 리포트 검증은 그대로 남겨두고, 새 매매 진단 흐름을 먼저 테스트합니다.")
+st.sidebar.divider()
+
+if analysis_mode == "매매 진단서":
+    trade_input = render_trade_autopsy_sidebar()
+    if not trade_input.get("ready"):
+        render_trade_autopsy_intro()
+        st.stop()
+    trade_result = load_trade_autopsy(
+        trade_input["company_name"],
+        trade_input.get("stock_code"),
+        trade_input["position_status"],
+        trade_input["buy_ymd"],
+        trade_input.get("buy_time", ""),
+        trade_input["buy_price"],
+        trade_input.get("quantity", 0),
+        trade_input.get("sell_ymd"),
+        trade_input.get("sell_time", ""),
+        trade_input.get("sell_price"),
+        trade_input["horizon"],
+        trade_input.get("buy_reasons") or [],
+        trade_input.get("leverage") or "없음",
+        trade_input.get("user_thesis") or "",
+        trade_input.get("source_material") or "",
+        trade_input.get("expected_target_price"),
+        trade_input.get("stop_loss_price"),
+        trade_input.get("position_weight_pct"),
+        trade_input.get("capital_pressure") or "",
+        trade_input.get("max_loss_pct"),
+    )
+    render_trade_autopsy_result(trade_result)
+    st.stop()
+
 st.sidebar.markdown("### 증권사 리포트, 지금도 믿어도 될까요?")
 st.sidebar.caption(
     "증권사 리포트의 목표가·투자의견·본문 의견을 DART 재무·공시, KRX 주가·수급, "
@@ -2487,6 +4597,7 @@ ready = False
 selected_company = None
 selected_target = None
 selected_stock_code = None
+investor_profile = {}
 sel_broker = ""
 sel_opinion = "매수"
 report_date = ""
@@ -2679,7 +4790,10 @@ if search_result and search_result.get("success"):
             opinion_default = stats["majority_opinion"]
         if stats.get("median_target"):
             target_default = int(stats["median_target"])
-            target_help = "업로드 PDF들의 중앙 목표가입니다. 개별 리포트별 목표가는 비교표에서 따로 확인하세요."
+            target_help = (
+                "임시 기본값은 업로드 리포트의 중앙 목표가입니다. "
+                "복수 리포트 분석 시 최종 점수는 FinSight가 고른 기준 리포트로 다시 계산합니다."
+            )
         else:
             target_default = 0
             target_help = "업로드 PDF에서 목표가를 확정적으로 읽지 못했습니다. 원문 목표가를 직접 입력하세요."
@@ -2741,6 +4855,24 @@ if search_result and search_result.get("success"):
         index=opinion_options.index(opinion_default) if opinion_default in opinion_options else 0,
     )
 
+    st.sidebar.markdown("**3️⃣ 내 상황 반영**")
+    with st.sidebar.expander("평단·보유상태 입력", expanded=False):
+        personal_status = st.selectbox(
+            "현재 상태",
+            ["입력 안 함", "보유 중", "신규 매수 검토", "추가 매수 검토", "일부 매도 고민", "관망 중", "매도 후 재진입 검토"],
+            help="이 값은 매수·매도 추천이 아니라 리포트 해석 문장을 개인 상황에 맞추는 데만 씁니다.",
+        )
+        personal_avg_price = st.number_input("평단가 (원)", min_value=0, value=0, step=100)
+        personal_weight = st.number_input("보유 비중 (%)", min_value=0.0, max_value=100.0, value=0.0, step=1.0)
+        personal_horizon = st.selectbox("투자 기간", ["미입력", "단기", "중기", "장기"])
+        investor_profile = {
+            "status": "" if personal_status == "입력 안 함" else personal_status,
+            "avg_price": int(personal_avg_price) if personal_avg_price else None,
+            "weight_pct": float(personal_weight) if personal_weight else None,
+            "horizon": "" if personal_horizon == "미입력" else personal_horizon,
+        }
+        st.caption("최종 판정은 여전히 기준 리포트 검증입니다. 이 입력은 그 판정을 내 상황 기준으로 번역합니다.")
+
     ready = selected_target and selected_target > 0
 
 elif search_result:
@@ -2763,6 +4895,7 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
                   report_extract_status: str = "",
                   report_target_evidence: str = "",
                   report_batch: list[dict] | None = None,
+                  investor_profile: dict | None = None,
                   current_price_hint: float | None = None,
                   stock_code_hint: str | None = None,
                   cache_version: int = 5):
@@ -2788,20 +4921,7 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         stock_code = real["stock_code"]
         comp_name = real["company_name"]
         is_demo = False
-        # 발행일 이후 외국인 수급 — 기간·일평균·최근 흐름까지 함께 보관
-        foreign_flow = fetch_foreign_flow(stock_code, report_date)
-        # 발행일 종가 — 실패 시 현재가로 대체하지 않는다.
-        # 현재가 폴백은 발행 후 수익률과 상승여력 소진율을 왜곡한다.
-        price_at_pub_info = fetch_price_at_date_info(stock_code, report_date)
-        price_at_pub = price_at_pub_info.get("price") if price_at_pub_info else None
         context = fetch_report_context(comp_name, stock_code)
-        post_events = build_post_report_events(
-            context,
-            report_date,
-            {"opinion": sel_opinion, "target_price": target_price},
-            stock_code=stock_code,
-            current_price=actual_price,
-        )
         comp_code = stock_code
     else:
         # ── 보조 재무 폴백 ──
@@ -2815,21 +4935,59 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         comp_name = company_name or D.DEMO_COMPANY["name"]
         comp_code = stock_code_hint or ""
         is_demo = True
-        foreign_flow = fetch_foreign_flow(comp_code, report_date) if comp_code else None
-        price_at_pub_info = fetch_price_at_date_info(comp_code, report_date) if comp_code else None
-        price_at_pub = price_at_pub_info.get("price") if price_at_pub_info else None
         context = (
             fetch_report_context(comp_name, comp_code)
             if comp_code else
             {"disclosures": [], "ownership": [], "news": [], "blogs": [], "market": {}, "external_drivers": {}, "errors": []}
         )
-        post_events = build_post_report_events(
-            context,
-            report_date,
-            {"opinion": sel_opinion, "target_price": target_price},
-            stock_code=comp_code,
-            current_price=actual_price,
-        )
+
+    fallback_report = {
+        "pub_date": report_date,
+        "opinion": sel_opinion,
+        "target_price": target_price,
+        "broker": sel_broker,
+        "title": report_title,
+        "url": report_url,
+        "pdf_url": report_pdf_url,
+        "file_name": report_file_name,
+        "text_excerpt": (report_text or "")[:12000],
+        "extract_status": report_extract_status,
+        "target_evidence": report_target_evidence,
+        "has_uploaded_file": bool(report_file_name),
+    }
+    basis = select_basis_report(
+        report_batch or [],
+        fallback_report,
+        stock_code=comp_code,
+        current_price=actual_price,
+        consensus=consensus,
+    )
+    basis_report = {**fallback_report, **(basis.get("report") or {})}
+    report_date = basis_report.get("pub_date") or report_date
+    target_price = int(_num(basis_report.get("target_price")) or target_price)
+    sel_opinion = basis_report.get("opinion") or sel_opinion
+    sel_broker = basis_report.get("broker") or sel_broker
+    report_title = basis_report.get("title") or report_title
+    report_url = basis_report.get("url") or report_url
+    report_pdf_url = basis_report.get("pdf_url") or report_pdf_url
+    report_file_name = basis_report.get("file_name") or report_file_name
+    report_text = basis_report.get("text_excerpt") or report_text
+    report_extract_status = basis_report.get("extract_status") or report_extract_status
+    report_target_evidence = basis_report.get("target_evidence") or report_target_evidence
+
+    # 발행일 이후 외국인 수급 — 기간·일평균·최근 흐름까지 함께 보관
+    foreign_flow = fetch_foreign_flow(comp_code, report_date) if comp_code and report_date else None
+    # 발행일 종가 — 실패 시 현재가로 대체하지 않는다.
+    # 현재가 폴백은 발행 후 수익률과 상승여력 소진율을 왜곡한다.
+    price_at_pub_info = fetch_price_at_date_info(comp_code, report_date) if comp_code and report_date else None
+    price_at_pub = price_at_pub_info.get("price") if price_at_pub_info else None
+    post_events = build_post_report_events(
+        context,
+        report_date,
+        {"opinion": sel_opinion, "target_price": target_price},
+        stock_code=comp_code,
+        current_price=actual_price,
+    )
 
     multiples = calculate_multiple_valuation(
         kpis=kpis, shares_outstanding=shares, net_debt=0, current_price=calc_price,
@@ -2889,6 +5047,7 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         current_price=actual_price,
         consensus=consensus,
         fallback_price_at_pub=None,
+        basis_report=basis_report,
     )
 
     report_payload = {
@@ -2905,6 +5064,11 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         "target_evidence": report_target_evidence,
         "has_uploaded_file": bool(report_file_name),
         "batch_count": len(report_batch or []),
+        "basis_mode": basis.get("mode"),
+        "basis_score": basis.get("score"),
+        "basis_reason": basis.get("reason"),
+        "basis_explanation": basis.get("explanation"),
+        "basis_identity": report_short_identity(basis_report),
     }
     content_analysis = analyze_report_content_batch({
         "report": report_payload,
@@ -2947,6 +5111,8 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         "consensus": consensus,
         "timeline": timeline,
         "report_batch_timeline": batch_timeline,
+        "basis_report": report_payload,
+        "basis_selection": basis,
         "verdict": verdict,
         "alignment": alignment,
         "report_content": content_analysis,
@@ -2955,6 +5121,7 @@ def load_analysis(company_name: str, report_date: str, target_price: int,
         "research": research,
         "price_action": price_action,
         "report_batch": report_batch or [],
+        "investor_profile": investor_profile or {},
         "is_demo_financials": is_demo,
     }
 
@@ -2974,6 +5141,7 @@ if ready:
         report_extract_status=sel_report_extract_status,
         report_target_evidence=sel_report_target_evidence,
         report_batch=uploaded_report_summaries,
+        investor_profile=investor_profile,
         current_price_hint=current_price_hint,
         stock_code_hint=selected_stock_code,
     )
@@ -2982,7 +5150,7 @@ else:
 
 # 초기 안내 화면
 if A is None:
-    render_product_header()
+    render_product_header("리포트 종합점검결과", REPORT_PRODUCT_COPY)
 
     # ── 히어로 ──
     st.markdown(
@@ -3039,7 +5207,7 @@ content_view["briefing"] = content_briefing
 # ──────────────────────────────────────────────
 # 헤더
 # ──────────────────────────────────────────────
-render_product_header()
+render_product_header("리포트 종합점검결과", REPORT_PRODUCT_COPY)
 st.markdown(
     f"<div style='display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;"
     f"padding:13px 18px;border:1px solid #E2E8F0;border-radius:10px;background:#FFFFFF;margin:6px 0 4px'>"
@@ -3061,8 +5229,12 @@ if rep.get("file_name"):
     meta_lines.append(f"<div><b>업로드 리포트</b>: {html.escape(str(rep['file_name'] + status_text))}</div>")
 if rep.get("batch_count", 0) > 1:
     meta_lines.append(
-        f"<div>업로드 리포트 {int(rep['batch_count'])}개를 비교하고, 종합 점수는 추출된 목표가의 중앙값을 기준으로 계산했습니다.</div>"
+        f"<div><b>판정 단위</b>: 업로드 리포트 {int(rep['batch_count'])}개 중 "
+        f"{html.escape(rep.get('basis_identity') or report_short_identity(rep))}을 기준 리포트로 선정했습니다. "
+        "최종 신뢰도는 이 기준 리포트의 사용 가능성 점수입니다.</div>"
     )
+    if rep.get("basis_reason"):
+        meta_lines.append(f"<div><b>선정 근거</b>: {html.escape(str(rep.get('basis_reason')))}</div>")
 if rep.get("pdf_url"):
     meta_lines.append(
         f"<div><a href='{html.escape(str(rep['pdf_url']))}' target='_blank' "
@@ -3134,7 +5306,7 @@ with sc1:
         f"box-shadow:0 2px 8px rgba(16,24,40,0.06)'>"
         f"<div style='height:5px;background:{gc}'></div>"
         f"<div style='padding:18px 8px 0'>"
-        f"<div style='font-size:12px;color:#8A94A3;font-weight:700;letter-spacing:0.3px'>신뢰도 점수</div>"
+        f"<div style='font-size:12px;color:#8A94A3;font-weight:700;letter-spacing:0.3px'>기준 리포트 신뢰도</div>"
         f"<div style='font-size:52px;font-weight:900;color:{gc};line-height:1.05;letter-spacing:-0.03em'>{V['total']}"
         f"<span style='font-size:17px;color:#B0B8C4;font-weight:700'> /100</span></div>"
         f"<div style='display:inline-block;font-size:14px;color:#fff;font-weight:800;background:{gc};"
@@ -3427,6 +5599,211 @@ def _first_alignment_read(alignment: dict, fallback: str) -> str:
     points = factor.get("points", 0)
     point_text = f" 신뢰도 -{points}점." if points else ""
     return f"{title}.{point_text} {reason}".strip()
+
+
+def build_personalized_interpretation(analysis: dict) -> dict:
+    profile = analysis.get("investor_profile") or {}
+    status = profile.get("status") or ""
+    avg_price = _num(profile.get("avg_price"))
+    weight = _num(profile.get("weight_pct"))
+    horizon = profile.get("horizon") or ""
+    if not any([status, avg_price, weight, horizon]):
+        return {}
+
+    company = analysis.get("company") or {}
+    report = analysis.get("report") or {}
+    verdict = analysis.get("verdict") or {}
+    timeline = analysis.get("timeline") or {}
+    current = _num(company.get("current_price"))
+    target = _num(report.get("target_price"))
+    trust = max(0, min(100, _num(verdict.get("total")) or 0))
+    reference_price = None
+    if current and target:
+        reference_price = current + (target - current) * (trust / 100)
+    elif target:
+        reference_price = target * (trust / 100)
+
+    pnl = (current / avg_price - 1) * 100 if current and avg_price else None
+    target_from_avg = (target / avg_price - 1) * 100 if target and avg_price else None
+    ref_from_avg = (reference_price / avg_price - 1) * 100 if reference_price and avg_price else None
+    soak = _num(timeline.get("soak_pct"))
+    remaining = _num(timeline.get("remaining"))
+    supply_gap = bool(timeline.get("supply_gap"))
+
+    status_label = status or "상황 입력"
+    title = f"{status_label} 기준 해석"
+    if status in ("신규 매수 검토", "추가 매수 검토"):
+        headline = "이 리포트는 진입 결정을 대신하기보다, 지금 가격에서 남은 근거를 확인하는 체크리스트로 쓰는 편이 맞습니다."
+    elif status in ("일부 매도 고민", "매도 후 재진입 검토"):
+        headline = "이 리포트는 정리 여부를 찍어주는 자료가 아니라, 목표가 기대를 계속 들고 갈 만한 전제가 남아 있는지 확인하는 기준표입니다."
+    elif status == "관망 중":
+        headline = "관망 중이라면 목표가 자체보다 리포트 전제가 새 데이터로 다시 확인되는지 보는 쪽이 더 유용합니다."
+    else:
+        headline = "보유 중이라면 리포트 목표가를 회복 기대값으로만 보지 말고, 내 평단과 보수적 참고가 사이의 거리를 함께 봐야 합니다."
+
+    position_bits = []
+    if avg_price and current:
+        position_bits.append(f"현재가는 평단 대비 {_fmt_pct(pnl)}입니다")
+    if avg_price and target:
+        position_bits.append(f"리포트 목표가 기준 평단 대비 여력은 {_fmt_pct(target_from_avg)}입니다")
+    if avg_price and reference_price:
+        position_bits.append(f"FinSight 보수적 참고가 기준으로는 {_fmt_pct(ref_from_avg)}입니다")
+    if weight:
+        position_bits.append(f"입력한 보유 비중은 {weight:.0f}%입니다")
+    if horizon:
+        position_bits.append(f"투자 기간 입력은 {horizon}입니다")
+
+    if avg_price and reference_price and avg_price > reference_price:
+        position_read = (
+            "평단가가 보수적 참고가보다 높습니다. 이 경우 목표가 숫자를 손실 회복 근거로 바로 쓰기보다, "
+            "발행 이후 수급과 다음 실적이 리포트 전제를 다시 지지하는지 먼저 확인해야 합니다."
+        )
+    elif avg_price and reference_price and avg_price <= reference_price:
+        position_read = (
+            "평단가가 보수적 참고가보다 낮거나 비슷합니다. 그래도 목표가 전체를 인정한다는 뜻은 아니며, "
+            "가격 반영률과 수급 괴리가 커지는지 계속 확인해야 합니다."
+        )
+    elif status in ("신규 매수 검토", "추가 매수 검토"):
+        position_read = (
+            "평단가가 없거나 아직 보유 전이라면, 목표가까지의 단순 여력보다 발행 이후 이미 반영된 상승여력과 "
+            "외국인·기관 수급 방향을 먼저 보는 편이 안전합니다."
+        )
+    else:
+        position_read = "평단가를 입력하면 현재가, 리포트 목표가, 보수적 참고가를 내 위치 기준으로 다시 계산합니다."
+
+    check_parts = []
+    if soak is not None and soak >= 70:
+        check_parts.append("리포트 발행 당시 기대 상승여력이 이미 많이 가격에 반영됐는지")
+    elif remaining is not None:
+        check_parts.append("목표가까지 남은 여력이 실제 실적 개선으로 설명되는지")
+    if supply_gap:
+        check_parts.append("외국인·기관 수급이 리포트 방향과 다시 맞아지는지")
+    check_parts.append("발행 이후 새 공시나 실적이 기준 리포트의 핵심 전제를 바꾸는지")
+    check_text = " / ".join(check_parts[:3])
+
+    return {
+        "title": title,
+        "headline": headline,
+        "position_read": position_read,
+        "reference_price": reference_price,
+        "target_acceptance": trust,
+        "position_bits": position_bits[:5],
+        "check_text": check_text,
+    }
+
+
+def render_personalized_interpretation(personal: dict) -> None:
+    if not personal:
+        return
+    chips = "".join(
+        f"<span>{html.escape(str(item))}</span>"
+        for item in personal.get("position_bits", [])
+    )
+    reference_price = personal.get("reference_price")
+    reference_text = _fmt_won(reference_price) if reference_price else "계산 제한"
+    acceptance = personal.get("target_acceptance")
+    st.markdown(
+        f"""
+        <div class="fs-personal-sheet">
+          <div class="fs-personal-kicker">내 상황 기준 해석</div>
+          <div class="fs-personal-title">{html.escape(personal.get("title", "개인화 해석"))}</div>
+          <p class="fs-personal-lead">{html.escape(personal.get("headline", ""))}</p>
+          <div class="fs-personal-grid">
+            <section>
+              <h4>내 위치</h4>
+              <p>{html.escape(personal.get("position_read", ""))}</p>
+              <div class="fs-personal-chips">{chips}</div>
+            </section>
+            <section>
+              <h4>보수적 참고가</h4>
+              <strong>{html.escape(reference_text)}</strong>
+              <p>기준 리포트 신뢰도 {acceptance:.0f}%를 현재가와 목표가 사이에 반영한 참고값입니다. 목표가를 그대로 인정한다는 뜻은 아닙니다.</p>
+            </section>
+            <section>
+              <h4>다음 확인 포인트</h4>
+              <p>{html.escape(personal.get("check_text", ""))}</p>
+            </section>
+          </div>
+        </div>
+        <style>
+        .fs-personal-sheet {{
+            margin: 12px 0 16px;
+            padding: 15px 16px 14px;
+            border: 1px solid #DAD7CE;
+            border-left: 4px solid #8A5A32;
+            border-radius: 8px;
+            background: #FFFDF8;
+        }}
+        .fs-personal-kicker {{
+            color: #8A5A32;
+            font-size: 12px;
+            font-weight: 850;
+            margin-bottom: 4px;
+        }}
+        .fs-personal-title {{
+            color: #17202A;
+            font-size: 19px;
+            font-weight: 900;
+            line-height: 1.3;
+        }}
+        .fs-personal-lead {{
+            color: #334155;
+            font-size: 13.5px;
+            line-height: 1.55;
+            margin: 7px 0 11px;
+        }}
+        .fs-personal-grid {{
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }}
+        .fs-personal-grid section {{
+            border: 1px solid #EEE6D8;
+            border-radius: 8px;
+            background: #FFFFFF;
+            padding: 11px 12px;
+        }}
+        .fs-personal-grid h4 {{
+            color: #475569;
+            font-size: 12px;
+            font-weight: 850;
+            margin: 0 0 6px;
+        }}
+        .fs-personal-grid p {{
+            color: #334155;
+            font-size: 12.5px;
+            line-height: 1.52;
+            margin: 0;
+        }}
+        .fs-personal-grid strong {{
+            display: block;
+            color: #17202A;
+            font-size: 20px;
+            font-weight: 900;
+            margin-bottom: 5px;
+        }}
+        .fs-personal-chips {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-top: 8px;
+        }}
+        .fs-personal-chips span {{
+            color: #667085;
+            background: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            border-radius: 999px;
+            padding: 3px 7px;
+            font-size: 11px;
+            font-weight: 700;
+        }}
+        @media (max-width: 900px) {{
+            .fs-personal-grid {{ grid-template-columns: 1fr; }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_report_check_result(
@@ -4042,6 +6419,7 @@ with tab5:
         has_report_body,
         batch_conclusion,
     )
+    render_personalized_interpretation(build_personalized_interpretation(A))
     if batch_conclusion:
         st.markdown("#### 리포트 간 비교 결론")
         st.info(batch_conclusion)
